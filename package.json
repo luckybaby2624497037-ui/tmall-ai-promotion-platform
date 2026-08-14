@@ -1,0 +1,11 @@
+{
+  "name": "tmall-ai-promotion-platform",
+  "version": "1.0.0",
+  "description": "天猫AI推广半自动化平台 - 前后端",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": { "node": ">=18" }
+}
