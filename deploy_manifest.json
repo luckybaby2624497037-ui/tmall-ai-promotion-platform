@@ -1,0 +1,26 @@
+{
+ "server.js": {
+  "sha": "47bbc765f6d62c44665b2bb461ba45ccfb1d1dc62f54475774a8f79fbfcf21a8",
+  "size": 15589
+ },
+ "package.json": {
+  "sha": "bd9cad08a714f283389683b2320cb3fdd8daa263b8ecdbf86d21f44ed9048494",
+  "size": 266
+ },
+ "vercel.json": {
+  "sha": "777489fe619cf2c03fdbba00b989fcbd9c48a5cf755ffbef23ebf52a2eb78a74",
+  "size": 135
+ },
+ ".env.example": {
+  "sha": "77c91af0b1d36a8d4fe8fdcf6ce6e188b22532956e33f4620cef691aeba1cc89",
+  "size": 218
+ },
+ "README.md": {
+  "sha": "6fc2a22fa90d4788a21ee5d8286173fdcbc809713378f53e7d798fb94c0255d5",
+  "size": 9988
+ },
+ "public/index.html": {
+  "sha": "e8853dab45f035e106bad80a626426eafe81c16588498354149de6c434820c68",
+  "size": 225242
+ }
+}
