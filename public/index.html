@@ -337,7 +337,6 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
     <div class="search-results" id="searchResults"></div>
   </div>
   <button class="auth-btn import-btn" onclick="DataImport.openModal()" title="导入Excel/CSV真实店铺数据"><i class="fa-solid fa-file-import"></i> 数据导入</button>
-  <button class="auth-btn" onclick="RuleEngine.open()" title="每店独立的自动化规则引擎"><i class="fa-solid fa-bolt"></i> 自动化规则</button>
   <div class="topbar-auth" id="topbarAuth"></div>
 </div>
 <div class="demo-banner" id="demoBanner" style="display:none">
@@ -943,10 +942,9 @@ const MODULES=[
     {id:'s10',name:'实时数据流',icon:'fa-stream',desc:'实时花费转化',render:'renderS10'},
     {id:'s11',name:'渠道归因分析',icon:'fa-route',desc:'多渠道触点归因',render:'renderS11'}
   ]},
-  {id:'m3',name:'投放管理',icon:'fa-bullhorn',color:'#f59e0b',desc:'开关计划、调价、预算与批量',skills:[
+  {id:'m3',name:'投放管理',icon:'fa-bullhorn',color:'#f59e0b',desc:'开关计划、批量调价与预算控制',skills:[
     {id:'s12',name:'自动开关计划',icon:'fa-power-off',desc:'ROI阈值自动开关',render:'renderS12'},
     {id:'s13',name:'批量开关计划',icon:'fa-layer-group',desc:'多选计划批量开关',render:'renderS13'},
-    {id:'s14',name:'智能调价',icon:'fa-sliders',desc:'PID调价模拟',render:'renderS14'},
     {id:'s15',name:'批量调价策略',icon:'fa-wand-magic-sparkles',desc:'批量出价模板',render:'renderS15'},
     {id:'s16',name:'预算调整',icon:'fa-coins',desc:'日预算智能分配',render:'renderS16'},
     {id:'s17',name:'批量操作引擎',icon:'fa-gears',desc:'批量调价改标题加词',render:'renderS17'},
@@ -1037,7 +1035,7 @@ function renderOverview(){
   }
   const stats=[
     {label:'在管店铺（当前：'+(currentStore()||'演示')+'）',value:myStores.length,icon:'fa-store',color:'var(--grad-primary)'},
-    {label:'可用技能',value:61,icon:'fa-bolt',color:'linear-gradient(135deg,#10b981,#059669)'},
+    {label:'可用技能',value:MODULES.reduce((t,m)=>t+m.skills.length,0),icon:'fa-bolt',color:'linear-gradient(135deg,#10b981,#059669)'},
     {label:'平台工具',value:10,icon:'fa-toolbox',color:'linear-gradient(135deg,#f59e0b,#d97706)'},
     {label:'今日操作',value:1247,icon:'fa-mouse-pointer',color:'linear-gradient(135deg,#3b82f6,#2563eb)'},
     {label:'自动化规则 · 今日触发 '+todayTrig+'次',value:activeRules,icon:'fa-bolt-lightning',color:'linear-gradient(135deg,#ec4899,#be185d)',onclick:'RuleEngine.open()'}
@@ -1336,7 +1334,8 @@ function renderS12(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><select id="s12Store" style="padding:6px;border:1px solid var(--c-border);border-radius:6px" onchange="s12Render()">${getStores().map(s=>`<option>${s.name}</option>`).join('')}</select></div>
     <div class="result-box mb-3"><h4 class="mb-2">自动规则配置</h4><div class="grid-3"><div class="form-group"><label>ROI下限</label><input id="s12Roi" type="number" value="2.0" step="0.1" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div><div class="form-group"><label>花费上限(元)</label><input id="s12Spend" type="number" value="5000" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div><div class="form-group"><label>结束时段</label><input id="s12Hour" type="number" value="23" min="0" max="23" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div></div><button class="btn btn-primary btn-sm mt-2" onclick="s12Eval()">执行规则检查</button></div>
     <div id="s12Plans"></div>
-  `,mb=>s12Render());
+    ${skillRuleHtml('s12')}
+  `,mb=>{s12Render();skillRuleRender('s12');});
 }
 function s12Render(){
   const store=getStores()[document.getElementById('s12Store').selectedIndex];
@@ -1361,7 +1360,8 @@ function renderS13(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><div id="s13Stores" class="flex flex-wrap gap-2"></div></div>
     <button class="btn btn-primary btn-sm" onclick="s13Exec()"><i class="fa-solid fa-bolt"></i> 执行批量操作</button>
     <div id="s13Result" class="mt-3"></div>
-  `,mb=>s13Init());
+    ${skillRuleHtml('s13')}
+  `,mb=>{s13Init();skillRuleRender('s13');});
 }
 function s13Init(){const stores=getCompareStores();document.getElementById('s13Stores').innerHTML=stores.map((s,i)=>`<span class="pill active" data-idx="${i}">${s.name}</span>`).join('');}
 function s13Exec(){
@@ -1374,23 +1374,7 @@ function s13Exec(){
   });
 }
 
-// ===== S14: 单店自动调价 =====
-function renderS14(mod,skill){
-  openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
-    <div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><select id="s14Store" style="padding:6px;border:1px solid var(--c-border);border-radius:6px" onchange="s14Render()">${getStores().map(s=>`<option>${s.name}</option>`).join('')}</select></div>
-    <div id="s14Kws"></div>
-    <button class="btn btn-primary btn-sm mt-3" onclick="s14Auto()"><i class="fa-solid fa-wand-magic"></i> 自动调价(PID)</button>
-    <div id="s14Result"></div>
-  `,mb=>s14Render());
-}
-function s14Render(){
-  const store=getStores()[document.getElementById('s14Store').selectedIndex];
-  const kws=LS.get('s14kws_'+store.name,[{word:'补水面膜',bid:2.5,rank:3,qs:8},{word:'美白精华',bid:3.8,rank:1,qs:9},{word:'防晒霜',bid:1.8,rank:5,qs:6},{word:'洁面乳',bid:2.0,rank:4,qs:7},{word:'面霜',bid:1.5,rank:6,qs:5}]);
-  document.getElementById('s14Kws').innerHTML=`<table class="data-table"><thead><tr><th>关键词</th><th>当前出价</th><th>排名</th><th>质量分</th><th>调整出价</th></tr></thead><tbody>${kws.map((k,i)=>`<tr><td>${k.word}</td><td>¥${k.bid.toFixed(2)}</td><td>第${k.rank}名</td><td>${k.qs}/10</td><td><input type="range" class="slider" min="0.5" max="10" step="0.1" value="${k.bid}" oninput="s14Bid(${i},this.value)" style="width:100px"><span id="s14v${i}" class="text-xs">¥${k.bid.toFixed(2)}</span></td></tr>`).join('')}</tbody></table>`;
-  LS.set('s14kws_'+store.name,kws);
-}
-function s14Bid(i,v){const store=getStores()[document.getElementById('s14Store').selectedIndex];const kws=LS.get('s14kws_'+store.name,[]);kws[i].bid=parseFloat(v);document.getElementById('s14v'+i).textContent='¥'+parseFloat(v).toFixed(2);const newRank=Math.max(1,Math.ceil(10/v));kws[i].rank=newRank;LS.set('s14kws_'+store.name,kws);s14Render();}
-function s14Auto(){const store=getStores()[document.getElementById('s14Store').selectedIndex];const kws=LS.get('s14kws_'+store.name,[]);let html='<div class="result-box mt-3"><h4>PID自动调价结果</h4>';kws.forEach(k=>{if(k.qs>=8&&k.rank>2){k.bid=Math.min(10,k.bid*1.15);k.rank=Math.max(1,k.rank-1);html+=`<p class="text-sm text-green"><i class="fa-solid fa-arrow-up"></i> ${k.word}: 质量分高，加价至¥${k.bid.toFixed(2)}，排名提升至第${k.rank}</p>`;}else if(k.qs<6){k.bid=Math.max(0.5,k.bid*0.85);html+=`<p class="text-sm text-orange"><i class="fa-solid fa-arrow-down"></i> ${k.word}: 质量分低，降价至¥${k.bid.toFixed(2)}</p>`;}else{html+=`<p class="text-sm text-gray">${k.word}: 维持当前出价¥${k.bid.toFixed(2)}</p>`;}});LS.set('s14kws_'+store.name,kws);s14Render();document.getElementById('s14Result').innerHTML=html+'</div>';}
+// ===== S14: 已剔除（与关键词管理-关键词智能调价功能重复） =====
 
 // ===== S15: 跨店统一调价策略 =====
 function renderS15(mod,skill){
@@ -1399,7 +1383,8 @@ function renderS15(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">每店参数覆盖：</label><div id="s15Stores"></div></div>
     <button class="btn btn-primary btn-sm" onclick="s15Exec()">预览并执行</button>
     <div id="s15Result" class="mt-3"></div>
-  `,mb=>s15Init());
+    ${skillRuleHtml('s15')}
+  `,mb=>{s15Init();skillRuleRender('s15');});
 }
 function s15Init(){const stores=getCompareStores();document.getElementById('s15Stores').innerHTML=`<table class="data-table"><thead><tr><th>店铺</th><th>调整上限(%)</th><th>目标排名</th></tr></thead><tbody>${stores.slice(0,6).map((s,i)=>`<tr><td>${s.name}</td><td><input type="number" value="20" id="s15cap${i}" style="width:60px;padding:4px;border:1px solid var(--c-border);border-radius:4px"></td><td><select id="s15rk${i}" style="padding:4px;border:1px solid var(--c-border);border-radius:4px"><option>第1-3名</option><option>第1-5名</option></select></td></tr>`).join('')}</tbody></table>`;}
 function s15Exec(){const stores=getCompareStores().slice(0,6);let html='<div class="result-box"><h4>执行结果</h4>';stores.forEach((s,i)=>{const cap=document.getElementById('s15cap'+i).value;const rk=document.getElementById('s15rk'+i).value;const changes=Math.floor(Math.random()*8)+2;html+=`<p class="text-sm"><i class="fa-solid fa-check text-green"></i> ${s.name}: 调整${changes}个关键词，上限${cap}%，目标${rk}</p>`;});document.getElementById('s15Result').innerHTML=html+'</div>';toast('策略已下发到所有店铺');}
@@ -1409,7 +1394,8 @@ function renderS16(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
     <div class="result-box mb-3"><div class="form-group"><label>总预算池 (元)</label><input id="s16Total" type="number" value="300000" style="padding:8px;border:1px solid var(--c-border);border-radius:6px"></div><button class="btn btn-primary btn-sm mt-2" onclick="s16InitStores()"><i class="fa-solid fa-magic"></i> 智能分配(AI)</button></div>
     <div id="s16Stores"></div>
-  `,mb=>s16InitStores());
+    ${skillRuleHtml('s16')}
+  `,mb=>{s16InitStores();skillRuleRender('s16');});
 }
 function s16InitStores(){
   const total=parseInt(document.getElementById('s16Total').value)||300000;
@@ -1432,7 +1418,8 @@ function renderS17(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><div id="s17Stores" class="flex flex-wrap gap-2"></div></div>
     <button class="btn btn-primary btn-sm" onclick="s17Exec()">预览</button> <button class="btn btn-success btn-sm" onclick="s17Run()">执行</button>
     <div id="s17Log" class="mt-3"></div>
-  `,mb=>s17Init());
+    ${skillRuleHtml('s17')}
+  `,mb=>{s17Init();skillRuleRender('s17');});
 }
 function s17Init(){const stores=getCompareStores();document.getElementById('s17Stores').innerHTML=stores.map((s,i)=>`<span class="pill active" data-idx="${i}">${s.name}</span>`).join('');}
 function s17Exec(){const stores=getCompareStores();const active=[...document.querySelectorAll('#s17Stores .pill.active')].map(p=>stores[parseInt(p.dataset.idx)]);const type=document.getElementById('s17Type').value;const param=document.getElementById('s17Param').value;document.getElementById('s17Log').innerHTML=`<div class="result-box"><h4>预览 (${type})</h4>${active.map(s=>`<p class="text-sm"><i class="fa-solid fa-eye text-blue"></i> ${s.name}: 将对${Math.floor(Math.random()*20)+5}个对象执行 ${type} ${param}</p>`).join('')}</div>`;}
@@ -1444,12 +1431,13 @@ function renderS18(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><select id="s18Store" style="padding:6px;border:1px solid var(--c-border);border-radius:6px" onchange="s18Render()">${getStores().map(s=>`<option>${s.name}</option>`).join('')}</select></div>
     <div class="mb-3"><label class="text-sm font-bold mb-2">地域：</label><div id="s18Regions" class="flex flex-wrap gap-2"></div></div>
     <div id="s18Heatmap"></div>
-    <div class="result-box mt-3"><p class="text-sm">点击热力图单元格调整该时段地域出价溢价。颜色越深表示转化率越高。</p><p class="text-sm mt-2">当前调整: <span id="s18Adjust">点击单元格设置</span></p></div>
-  `,mb=>s18Init());
+    <div class="result-box mt-3"><p class="text-sm">点击热力图单元格调整该时段地域出价溢价。颜色越深表示转化率越高。</p><p class="text-sm mt-2">当前调整: <span id="s18Adjust">点击单元格设置</span></p><p class="text-sm mt-1">规则自动溢价系数: <b id="s18AutoPremium" style="color:#ec4899"></b></p></div>
+    ${skillRuleHtml('s18')}
+  `,mb=>{s18Init();skillRuleRender('s18');});
 }
 function s18Init(){const regions=['华东','华南','华北','华中','西南','东北'];document.getElementById('s18Regions').innerHTML=regions.map((r,i)=>`<span class="pill ${i===0?'active':''}" onclick="s18Region(this)">${r}</span>`).join('');s18Render();}
 function s18Region(el){[...el.parentElement.querySelectorAll('.pill')].forEach(p=>p.classList.remove('active'));el.classList.add('active');s18Render();}
-function s18Render(){const region=document.querySelector('#s18Regions .pill.active')?.textContent||'华东';const hours=24;let html=`<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>时段</th>${Array.from({length:hours},(_,i)=>`<th style="text-align:center">${i}</th>`).join('')}</tr></thead><tbody>`;['转化率%','出价溢价%'].forEach((row,ri)=>{html+=`<tr><td>${row}</td>`;for(let h=0;h<hours;h++){const cvr=Math.round(Math.random()*8+1);const premium=LS.get('s18_'+region+'_'+h,0);if(ri===0){const color=`hsl(${cvr*30},70%,${80-cvr*5}%)`;html+=`<td style="text-align:center;padding:6px;background:${color};cursor:pointer;color:${cvr>5?'#fff':'#333'};font-size:10px" onclick="s18Cell('${region}',${h})">${cvr}</td>`;}else{html+=`<td style="text-align:center;padding:6px;font-size:10px">${premium>0?'+'+premium+'%':'-'}</td>`;}}html+='</tr>';});html+='</tbody></table></div>';document.getElementById('s18Heatmap').innerHTML=html;}
+function s18Render(){const region=document.querySelector('#s18Regions .pill.active')?.textContent||'华东';const hours=24;let html=`<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>时段</th>${Array.from({length:hours},(_,i)=>`<th style="text-align:center">${i}</th>`).join('')}</tr></thead><tbody>`;['转化率%','出价溢价%'].forEach((row,ri)=>{html+=`<tr><td>${row}</td>`;for(let h=0;h<hours;h++){const cvr=Math.round(Math.random()*8+1);const premium=LS.get('s18_'+region+'_'+h,0);if(ri===0){const color=`hsl(${cvr*30},70%,${80-cvr*5}%)`;html+=`<td style="text-align:center;padding:6px;background:${color};cursor:pointer;color:${cvr>5?'#fff':'#333'};font-size:10px" onclick="s18Cell('${region}',${h})">${cvr}</td>`;}else{html+=`<td style="text-align:center;padding:6px;font-size:10px">${premium>0?'+'+premium+'%':'-'}</td>`;}}html+='</tr>';});html+='</tbody></table></div>';document.getElementById('s18Heatmap').innerHTML=html;const ap=document.getElementById('s18AutoPremium');if(ap)ap.textContent=LS.get('premium_base_'+(currentStore()||'demo'),100)+'%（规则触发时自动调整）';}
 function s18Cell(region,h){const cur=LS.get('s18_'+region+'_'+h,0);const newV=prompt(`设置 ${region} ${h}点出价溢价(%)`,cur);if(newV!==null){LS.set('s18_'+region+'_'+h,parseInt(newV)||0);document.getElementById('s18Adjust').textContent=`${region} ${h}点: +${newV}%`;s18Render();}}
 
 // ===== S19: 跨店共享词库 =====
@@ -1493,7 +1481,8 @@ function renderS21(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
     <div class="mb-3"><label class="text-sm font-bold mb-2">店铺：</label><div id="s21Tabs" class="flex flex-wrap gap-2"></div></div>
     <div id="s21Table"></div>
-  `,mb=>s21Init());
+    ${skillRuleHtml('s21')}
+  `,mb=>{s21Init();skillRuleRender('s21');});
 }
 function s21Init(){const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);document.getElementById('s21Tabs').innerHTML=stores.map((s,i)=>`<span class="pill ${i===0?'active':''}" onclick="s21Tab(${i})" data-idx="${i}">${s.name.slice(0,8)}</span>`).join('');s21Tab(0);}
 function s21Tab(i){document.querySelectorAll('#s21Tabs .pill').forEach((p,j)=>p.classList.toggle('active',j===i));const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[i];const kws=LS.get('s21_'+store.name,[{word:'补水面膜',bid:2.5,rank:3,qs:8},{word:'美白精华',bid:3.8,rank:1,qs:9},{word:'防晒霜',bid:1.8,rank:5,qs:6},{word:'洁面乳',bid:2.0,rank:4,qs:7}]);document.getElementById('s21Table').innerHTML=`<table class="data-table"><thead><tr><th>关键词</th><th>出价</th><th>排名</th><th>质量分</th><th>建议</th><th>调整</th></tr></thead><tbody>${kws.map((k,ki)=>{const sug=k.qs>=8&&k.rank>2?'加价':k.qs<6?'降价':'维持';return `<tr><td>${k.word}</td><td>¥${k.bid.toFixed(2)}</td><td>第${k.rank}名</td><td>${k.qs}/10</td><td><span class="badge ${sug==='加价'?'badge-green':sug==='降价'?'badge-red':'badge-gray'}">${sug}</span></td><td><button class="btn btn-sm btn-primary" onclick="s21Adj(${i},${ki},1)">+</button> <button class="btn btn-sm btn-secondary" onclick="s21Adj(${i},${ki},-1)">-</button></td></tr>`;}).join('')}</tbody></table>`;}
@@ -1506,7 +1495,8 @@ function renderS22(mod,skill){
     <div class="mb-3"><label class="text-sm font-bold mb-2">同步目标店铺：</label><div id="s22Stores" class="flex flex-wrap gap-2"></div></div>
     <div id="s22List" class="mb-3"></div>
     <div id="s22Result"></div>
-  `,mb=>s22Init());
+    ${skillRuleHtml('s22')}
+  `,mb=>{s22Init();skillRuleRender('s22');});
 }
 function s22Init(){const stores=getCompareStores();document.getElementById('s22Stores').innerHTML=stores.map((s,i)=>`<span class="pill active" data-idx="${i}">${s.name}</span>`).join('');s22RenderList();}
 function s22RenderList(){const negs=LS.get('s22negs',['免费试用','假货','仿品','山寨']);document.getElementById('s22List').innerHTML=`<h4 class="mb-2">否词列表</h4>${negs.map((n,i)=>`<span class="badge badge-red" style="margin:2px">${n} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="s22Del(${i})"></i></span>`).join('')}`;}
@@ -1528,7 +1518,8 @@ function renderS24(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
     <div class="flex gap-3 mb-3 items-center"><div class="toggle on" id="s24Toggle" onclick="this.classList.toggle('on')"></div><span class="text-sm">自动刷新</span><button class="btn btn-primary btn-sm" onclick="s24Refresh()"><i class="fa-solid fa-rotate"></i> 立即刷新</button></div>
     <div id="s24Table"></div>
-  `,mb=>s24Render());
+    ${skillRuleHtml('s24')}
+  `,mb=>{s24Render();skillRuleRender('s24');});
 }
 function s24Render(){const stores=getCompareStores().slice(0,6);const kws=['补水面膜','美白精华','防晒霜','口红'];let html='<table class="data-table"><thead><tr><th>店铺</th><th>关键词</th><th>当前排名</th><th>目标排名</th><th>状态</th></tr></thead><tbody>';stores.forEach(s=>{kws.forEach(kw=>{const rank=Math.ceil(Math.random()*10);const target=3;const ok=rank<=target;html+=`<tr><td>${s.name}</td><td>${kw}</td><td>第${rank}名</td><td>前${target}名</td><td>${ok?'<span class="badge badge-green">达标</span>':'<span class="badge badge-red">未达标</span>'}</td></tr>`;});});html+='</tbody></table>';document.getElementById('s24Table').innerHTML=html;}
 function s24Refresh(){s24Render();toast('排名已刷新');}
@@ -1607,7 +1598,8 @@ function renderS29(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
     <div class="mb-3"><label class="text-sm font-bold mb-2">店铺：</label><div id="s29Tabs" class="flex flex-wrap gap-2"></div></div>
     <div id="s29Table"></div>
-  `,mb=>s29Init());
+    ${skillRuleHtml('s29')}
+  `,mb=>{s29Init();skillRuleRender('s29');});
 }
 function s29Init(){const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);document.getElementById('s29Tabs').innerHTML=stores.map((s,i)=>`<span class="pill ${i===0?'active':''}" onclick="s29Tab(${i})" data-idx="${i}">${s.name.slice(0,8)}</span>`).join('');s29Tab(0);}
 function s29Tab(i){document.querySelectorAll('#s29Tabs .pill').forEach((p,j)=>p.classList.toggle('active',j===i));const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[i];const auds=LS.get('s29_'+store.name,[{name:'高消费人群',coef:1.5},{name:'复购用户',coef:1.3},{name:'浏览未购',coef:0.8},{name:'新品偏好',coef:1.1},{name:'流失用户',coef:0.5}]);document.getElementById('s29Table').innerHTML=`<table class="data-table"><thead><tr><th>人群</th><th>出价系数</th><th>调整</th><th>预估效果</th></tr></thead><tbody>${auds.map((a,ai)=>`<tr><td>${a.name}</td><td>${a.coef.toFixed(2)}x</td><td><input type="range" class="slider" min="0.1" max="3" step="0.1" value="${a.coef}" oninput="s29Adj(${i},${ai},this.value)" style="width:100px"></td><td><span class="badge ${a.coef>=1.2?'badge-green':a.coef>=0.8?'badge-yellow':'badge-red'}">${a.coef>=1.2?'高优先':a.coef>=0.8?'标准':'低优先'}</span></td></tr>`).join('')}</tbody></table>`;}
@@ -2746,6 +2738,8 @@ const RULE_TFS=[['rt','实时'],['today','今日累计'],['d7','近7天'],['d30'
 const RULE_ACTIONS=[
   ['budget_up','计划预算上调%'],['budget_down','计划预算下调%'],['budget_set','计划预算设为固定值(元)'],
   ['bid_up','关键词出价上调%'],['bid_down','关键词出价下调%'],['bid_set','关键词出价设为固定值(元)'],
+  ['premium_up','时段地域溢价系数上调%'],['premium_down','时段地域溢价系数下调%'],
+  ['aud_bid_up','人群出价系数上调%'],['aud_bid_down','人群出价系数下调%'],
   ['pause_plan','暂停计划'],['resume_plan','启动计划'],['pause_kw','暂停关键词'],['neg_kw','加入否词库'],['alert','仅告警通知']
 ];
 const RuleEngine={
@@ -2758,8 +2752,8 @@ const RuleEngine={
   saveOverrides(v){LS.set(this.storeKey('rule_overrides'),v);},
 
   open(){
-    openModal('自动化规则引擎','<i class="fa-solid fa-bolt"></i>','#ec4899',
-      `<div class="mb-3 result-box"><div class="flex justify-between items-center flex-wrap gap-2"><div><span class="badge badge-pink">当前店铺：${currentStore()||'演示模式'}</span> <span class="text-xs text-gray">规则仅作用于该店铺，切换店铺后规则独立</span></div><div class="flex gap-2 items-center"><div class="toggle" id="reAutoToggle" onclick="RuleEngine.toggleAuto(this)"></div><span class="text-xs">60秒自动执行</span><button class="btn btn-primary btn-sm" onclick="RuleEngine.evaluateAll(true)"><i class="fa-solid fa-play"></i> 立即执行全部规则</button></div></div></div>
+    openModal('自动化规则总览','<i class="fa-solid fa-bolt"></i>','#ec4899',
+      `<div class="mb-3 result-box"><div class="flex justify-between items-center flex-wrap gap-2"><div><span class="badge badge-pink">当前店铺：${currentStore()||'演示模式'}</span> <span class="text-xs text-gray">规则在各技能弹窗内配置（如自动开关计划、关键词智能调价、人群出价策略等），此处为汇总视图</span></div><div class="flex gap-2 items-center"><button class="btn btn-primary btn-sm" onclick="RuleEngine.evaluateAll(true)"><i class="fa-solid fa-play"></i> 立即执行全部规则</button></div></div></div>
        <div class="flex gap-2 mb-3" id="reTabs">
          <span class="pill active" onclick="RuleEngine.tab(this,'rules')">规则列表</span>
          <span class="pill" onclick="RuleEngine.tab(this,'exec')">执行日志</span>
@@ -2843,7 +2837,9 @@ const RuleEngine={
       {id:'品牌名 旗舰店',name:'品牌名 旗舰店',status:'active',bid:1.9,rank:1,roi:5.2,cost:90,ctr:6.5,cvr:3.8,converts:6},
       {id:'早c晚a 精华',name:'早c晚a 精华',status:'active',bid:3.5,rank:8,roi:0.8,cost:260,ctr:2.2,cvr:0.6,converts:1}
     ];
-    return {campaigns,keywords};
+    const aimp=DataAdapter.getImportedData(currentStore(),'audience_report');
+    let audiences=(aimp&&aimp.rows&&aimp.rows.length)?aimp.rows.slice(0,20).map(r=>({id:String(r['人群名称']||r['人群']||'人群'),name:String(r['人群名称']||r['人群']||'人群'),status:'active',roi:+(r['ROI']||r.roi||2.5),cost:+(r['花费']||r.cost||150),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.8),converts:+(r['转化量']||r.converts||5)})):DEMO_SEED.audiences.map(a=>Object.assign({},a,{id:a.name,status:'active',cost:Math.round(a.coverage/500),ctr:3.2,cvr:1.9,converts:Math.round(a.coverage/8000)}));
+    return {campaigns,keywords,audiences};
   },
   metricValue(t,metric,tf){
     let v=0;
@@ -2868,16 +2864,16 @@ const RuleEngine={
   evaluateAll(verbose){
     const rules=this.getRules().filter(r=>r.enabled);
     if(!rules.length){if(verbose)toast('暂无启用的规则');return;}
-    const {campaigns,keywords}=this.getTargets();
+    const {campaigns,keywords,audiences}=this.getTargets();
     const exec=this.getExecLog();
     const ov=this.getOverrides();
     const now=Date.now();
     const today=new Date().toDateString();
     let fired=0;
     rules.forEach(rule=>{
-      const list=rule.level==='关键词'?keywords:campaigns;
+      const list=rule.level==='关键词'?keywords:(rule.level==='人群'?audiences:campaigns);
       list.forEach(t=>{
-        if(rule.level==='计划'&&t.status!=='active'&&rule.action!=='resume_plan')return;
+        if(t.status!=='active'&&rule.action!=='resume_plan')return;
         const last=exec.filter(e=>e.ruleId===rule.id&&e.targetId===t.id)[0];
         if(last&&(now-last.ts)<rule.cooldown*60000)return;
         const {hit,v}=this.checkTrigger(t,rule);
@@ -2899,6 +2895,25 @@ const RuleEngine={
         else if(rule.action==='pause_plan'){t.status='paused';detail.change='计划已暂停';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
         else if(rule.action==='resume_plan'){t.status='active';detail.change='计划已启动';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'paused',newValue:'active',pct:0,ruleId:rule.id,ts:now});}
         else if(rule.action==='pause_kw'){t.status='paused';detail.change='关键词已暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
+        else if(rule.action==='premium_up'||rule.action==='premium_down'){
+          const sName=currentStore()||'demo';
+          const base=LS.get('premium_base_'+sName,100);
+          const pct=rule.action==='premium_up'?rule.param:-rule.param;
+          const nv=Math.max(30,Math.min(200,Math.round(base*(1+pct/100))));
+          detail={old:base,newVal:nv,change:`时段地域溢价系数 ${base}%→${nv}%`};
+          LS.set('premium_base_'+sName,nv);
+          ov.push({targetType:'premium',targetId:'全局系数',field:'premium',oldValue:base,newValue:nv,pct,ruleId:rule.id,ts:now});
+        }
+        else if(rule.action==='aud_bid_up'||rule.action==='aud_bid_down'){
+          const sName=currentStore()||'demo';
+          const map=LS.get('aud_bid_'+sName,{});
+          const cur=map[t.name]!==undefined?map[t.name]:100;
+          const pct=rule.action==='aud_bid_up'?rule.param:-rule.param;
+          const nv=Math.max(30,Math.min(300,Math.round(cur*(1+pct/100))));
+          map[t.name]=nv;LS.set('aud_bid_'+sName,map);
+          detail={old:cur,newVal:nv,change:`人群「${t.name}」出价系数 ${cur}%→${nv}%`};
+          ov.push({targetType:'audience',targetId:t.id,field:'bidCoef',oldValue:cur,newValue:nv,pct,ruleId:rule.id,ts:now});
+        }
         else if(rule.action==='neg_kw'){const neg=LS.get('negative_'+(currentStore()||'demo'),[]);if(!neg.includes(t.name))neg.push(t.name);LS.set('negative_'+(currentStore()||'demo'),neg);t.status='paused';detail.change='已加入否词库并暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
         else if(rule.action==='alert'){detail.change='仅告警，未执行变更';}
         exec.unshift({ruleId:rule.id,ruleName:rule.name,store:currentStore()||'demo',targetType:rule.level,targetId:t.id,metric:rule.metric,actual:v,threshold:rule.threshold,action:rule.action,change:detail.change||'-',ts:now});
@@ -2953,6 +2968,71 @@ const RuleEngine={
     toast('已导出');
   }
 };
+
+// ===================== 技能内嵌规则面板 =====================
+// 每个有出价/预算/开关动作的技能，在自己的弹窗内直接配置自动化规则。
+// 规则带 skill 字段归属到具体技能，同时进入全局执行队列（RuleEngine.evaluateAll）。
+const SKILL_RULE_CONFIG={
+  s12:{name:'自动开关计划',level:'计划',actions:['pause_plan','resume_plan','alert'],tips:'例如：ROI低于2自动暂停计划；花费超上限自动暂停'},
+  s13:{name:'批量开关计划',level:'计划',actions:['pause_plan','resume_plan','alert'],tips:'例如：ROI低于1.5批量暂停低效计划'},
+  s15:{name:'批量调价策略',level:'关键词',actions:['bid_up','bid_down','bid_set','alert'],tips:'例如：排名跌出前5出价上调10%'},
+  s16:{name:'预算调整',level:'计划',actions:['budget_up','budget_down','budget_set','alert'],tips:'例如：ROI高于4预算上调20%；ROI低于1.5预算下调20%'},
+  s17:{name:'批量操作引擎',level:'计划',actions:['bid_up','bid_down','pause_plan','alert'],tips:'例如：花费超限自动暂停并告警'},
+  s18:{name:'时段地域投放优化',level:'计划',actions:['premium_up','premium_down','alert'],tips:'例如：消耗速度过快时溢价系数自动下调；CVR高时自动上调'},
+  s21:{name:'关键词智能调价',level:'关键词',actions:['bid_up','bid_down','bid_set','pause_kw','neg_kw','alert'],tips:'例如：排名低于3出价上调10%；7天零转化自动否词'},
+  s22:{name:'否词库管理',level:'关键词',actions:['neg_kw','alert'],tips:'例如：近7天花费超100且零转化自动加入否词'},
+  s24:{name:'排名监控',level:'关键词',actions:['bid_up','alert'],tips:'例如：排名跌出前3自动上调出价抢回排名'},
+  s29:{name:'人群出价策略',level:'人群',actions:['aud_bid_up','aud_bid_down','alert'],tips:'例如：人群ROI高于3.5出价系数上调15%；ROI低于1自动下调'}
+};
+function skillRuleHtml(key){return `<div class="result-box mt-3" style="border-left:4px solid #ec4899"><div class="flex justify-between items-center flex-wrap gap-2 mb-2"><h4><i class="fa-solid fa-bolt" style="color:#ec4899"></i> 自动化规则 <span class="text-xs text-gray font-normal">达到条件后自动执行，仅作用于当前店铺</span></h4><button class="btn btn-primary btn-sm" onclick="RuleEngine.evaluateAll(true)"><i class="fa-solid fa-play"></i> 立即执行规则</button></div><div id="srp_${key}"></div></div>`;}
+function skillRuleRender(key){
+  const cfg=SKILL_RULE_CONFIG[key];
+  if(!cfg)return;
+  const el=document.getElementById('srp_'+key);
+  if(!el)return;
+  const rules=RuleEngine.getRules().filter(r=>r.skill===key);
+  const mLabel=k=>(RULE_METRICS.find(m=>m[0]===k)||['',k])[1];
+  const oLabel=k=>(RULE_OPS.find(o=>o[0]===k)||['',k])[1];
+  const tLabel=k=>(RULE_TFS.find(t=>t[0]===k)||['',k])[1];
+  const aLabel=k=>(RULE_ACTIONS.find(a=>a[0]===k)||['',k])[1];
+  let html=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-lightbulb" style="color:#f59e0b"></i> ${cfg.tips}</p>`;
+  if(rules.length){
+    html+='<table class="data-table"><thead><tr><th>启用</th><th>触发条件</th><th>自动动作</th><th>冷却</th><th>操作</th></tr></thead><tbody>';
+    html+=rules.map(r=>`<tr><td><div class="toggle ${r.enabled?'on':''}" onclick="skillRuleToggle('${key}','${r.id}')"></div></td><td class="text-xs">${cfg.level==='关键词'?'关键词':cfg.level==='人群'?'人群':'计划'}的 ${mLabel(r.metric)} ${oLabel(r.op)} ${r.threshold}（${tLabel(r.tf)}）</td><td class="text-xs">${aLabel(r.action)}${r.param?` ${r.param}${r.action.includes('_up')||r.action.includes('_down')?'%':(r.action==='budget_set'||r.action==='bid_set')?'元':''}`:''}${r.capDailyPct&&r.capDailyPct<100?`（日上限${r.capDailyPct}%）`:''}</td><td>${r.cooldown}分</td><td><button class="btn btn-sm btn-danger" onclick="skillRuleDel('${key}','${r.id}')">删除</button></td></tr>`).join('');
+    html+='</tbody></table>';
+  }else{
+    html+='<p class="text-sm text-gray mb-2">暂无规则，使用下方快速添加，或直接套用常用模板：</p>';
+  }
+  html+=`<div class="grid-4 mt-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    <select id="sr_${key}_metric" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">${RULE_METRICS.map(m=>`<option value="${m[0]}">${m[1]}</option>`).join('')}</select>
+    <select id="sr_${key}_op" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">${RULE_OPS.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('')}</select>
+    <input id="sr_${key}_th" type="number" step="0.1" value="2" placeholder="阈值" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">
+    <select id="sr_${key}_tf" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">${RULE_TFS.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join('')}</select>
+  </div>
+  <div class="grid-4 mt-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    <select id="sr_${key}_act" style="padding:6px;border:1px solid var(--c-border);border-radius:6px" onchange="document.getElementById('sr_${key}_param').style.display=this.value.endsWith('_set')||this.value==='alert'||this.value==='pause_plan'||this.value==='resume_plan'||this.value==='pause_kw'||this.value==='neg_kw'?'none':'block'">${cfg.actions.map(a=>`<option value="${a}">${aLabel(a)}</option>`).join('')}</select>
+    <input id="sr_${key}_param" type="number" value="10" placeholder="参数(%/元)" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">
+    <input id="sr_${key}_cd" type="number" value="60" placeholder="冷却(分)" style="padding:6px;border:1px solid var(--c-border);border-radius:6px">
+    <button class="btn btn-primary btn-sm" onclick="skillRuleAdd('${key}')"><i class="fa-solid fa-plus"></i> 添加规则</button>
+  </div>`;
+  el.innerHTML=html;
+}
+function skillRuleAdd(key){
+  const cfg=SKILL_RULE_CONFIG[key];
+  const g=id=>document.getElementById('sr_'+key+'_'+id);
+  const metric=g('metric').value,op=g('op').value,th=parseFloat(g('th').value),tf=g('tf').value,act=g('act').value;
+  let param=parseFloat(g('param').value)||0;
+  if(act==='alert'||act==='pause_plan'||act==='resume_plan'||act==='pause_kw'||act==='neg_kw')param=0;
+  if(isNaN(th)){toast('请输入阈值');return;}
+  const rules=RuleEngine.getRules();
+  rules.push({id:'r'+Date.now(),skill:key,name:cfg.name+'规则',enabled:true,level:cfg.level,metric,op,threshold:th,tf,action:act,param,capDailyPct:50,cooldown:parseInt(g('cd').value)||60,createdAt:Date.now()});
+  RuleEngine.saveRules(rules);
+  skillRuleRender(key);
+  renderOverview();
+  toast('规则已添加，达到条件后将自动执行');
+}
+function skillRuleToggle(key,id){const rules=RuleEngine.getRules();const r=rules.find(x=>x.id===id);if(r){r.enabled=!r.enabled;RuleEngine.saveRules(rules);skillRuleRender(key);renderOverview();}}
+function skillRuleDel(key,id){RuleEngine.saveRules(RuleEngine.getRules().filter(x=>x.id!==id));skillRuleRender(key);renderOverview();toast('已删除');}
 
 // ===================== INIT =====================
 (async function initApp(){
