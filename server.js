@@ -24,6 +24,8 @@ const CONFIG = {
 const OAUTH_AUTHORIZE_URL = 'https://oauth.taobao.com/authorize';
 const OAUTH_TOKEN_URL = 'https://oauth.taobao.com/token';
 const OPEN_API_GATEWAY = 'https://eco.taobao.com/router/rest';
+// 万相台无界版代理网关（内部代理，支持bizParams业务参数透传）
+const XCXD_PROXY_URL = process.env.XCXD_PROXY_URL || 'http://one-fmw.xcxd.cn/api/proxy/universalbp';
 
 // ===================== 内存存储 =====================
 // OAuth state -> { shopName, createdAt }
@@ -127,6 +129,20 @@ async function postForm(url, params) {
       'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8'
     },
     body
+  });
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { raw: text, parse_error: true };
+  }
+}
+
+async function postJSON(url, payload) {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json;charset=utf-8' },
+    body: JSON.stringify(payload)
   });
   const text = await resp.text();
   try {
@@ -306,40 +322,43 @@ async function handleApi(req, res, pathname, query) {
     return sendJSON(res, 200, { status: removed ? 'ok' : 'not_found', message: removed ? '已退出登录' : '记录不存在' });
   }
 
-  // ---------- 阿里妈妈开放API网关代理 ----------
+  // ---------- 万相台无界版API代理（经xcxd代理网关，bizParams格式） ----------
   if (req.method === 'POST' && pathname === '/api/proxy/alimama') {
     const body = await readBody(req);
-    const userId = String(body.userId || '');
     const method = String(body.method || '');
+    const session = String(body.session || '');
+    const bizParams = (body.bizParams && typeof body.bizParams === 'object') ? body.bizParams : {};
     const params = (body.params && typeof body.params === 'object') ? body.params : {};
     if (!method) return sendJSON(res, 400, { status: 'error', message: '缺少method参数' });
+    if (!session) return sendJSON(res, 401, { status: 'error', message: '缺少session（店铺授权令牌）' });
     if (!CONFIG.appKey || !CONFIG.appSecret) {
       return sendJSON(res, 200, {
         status: 'not_configured',
         message: '请先配置阿里妈妈开放平台appKey/appSecret'
       });
     }
-    const record = tokens.get(userId);
-    if (!record) return sendJSON(res, 401, { status: 'error', message: '该店铺未授权或授权已失效，请重新登录' });
 
-    // 组装 TOP 公共参数 + 业务参数
-    const allParams = Object.assign({}, params, {
-      method,
-      app_key: CONFIG.appKey,
-      session: record.accessToken,
-      timestamp: formatTimestamp(new Date()),
-      v: '2.0',
-      sign_method: 'hmac',
-      format: 'json'
-    });
-    allParams.sign = signRequest(allParams, CONFIG.appSecret);
+    // 合并 bizParams 与 params（params为兼容旧格式：扁平业务参数）
+    const mergedBiz = Object.assign({}, params, bizParams);
+    // 兼容：若未显式传 top_service_context，自动补充默认业务线上下文
+    if (!mergedBiz.top_service_context) {
+      mergedBiz.top_service_context = JSON.stringify({ biz_code: 'onebpSearch', login_type: 1 });
+    }
+
+    const proxyPayload = {
+      appid: CONFIG.appKey,
+      appsecret: CONFIG.appSecret,
+      session: session,
+      method: method,
+      bizParams: mergedBiz
+    };
 
     try {
-      const resp = await postForm(OPEN_API_GATEWAY, allParams);
+      const resp = await postJSON(XCXD_PROXY_URL, proxyPayload);
       // 透传上游响应（包括未开通权限的报错，便于前端透明展示）
       return sendJSON(res, 200, { status: 'ok', method, response: resp });
     } catch (e) {
-      return sendJSON(res, 200, { status: 'error', method, message: '网关请求失败: ' + e.message });
+      return sendJSON(res, 200, { status: 'error', method, message: '代理请求失败: ' + e.message });
     }
   }
 

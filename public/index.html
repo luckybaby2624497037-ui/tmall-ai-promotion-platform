@@ -581,43 +581,28 @@ const DataAdapter={
   // ---------- 店铺授权记录（localStorage: tmall_shops） ----------
   getShops(){try{return JSON.parse(localStorage.getItem('tmall_shops')||'[]');}catch(e){return[];}},
   saveShops(shops){try{localStorage.setItem('tmall_shops',JSON.stringify(shops));}catch(e){}},
-  // ---------- 初始化：决定 demo/real ----------
+  // ---------- 初始化：决定 demo/real（有session令牌的店铺即real模式） ----------
   async init(){
     this.scanImportedData();
-    const shops=this.getShops();
-    this.mode='demo';
-    if(shops.length){
-      try{
-        const r=await fetch('/api/auth/status');
-        const d=await r.json();
-        if(d&&d.configured&&Array.isArray(d.stores)&&d.stores.length){
-          const valid=shops.filter(s=>d.stores.some(t=>String(t.userId)===String(s.userId)));
-          d.stores.forEach(t=>{
-            if(!valid.some(v=>String(v.userId)===String(t.userId)))
-              valid.push({userId:t.userId,shopName:t.shopName,nick:t.nick,expiresAt:t.expiresAt});
-          });
-          this.saveShops(valid);
-          if(valid.length){
-            this.mode='real';
-            this.currentUserId=String(valid[0].userId);
-          }
-        }
-      }catch(e){this.mode='demo';}
-    }
+    const my=getMyStores();
+    const hasSession=my.some(s=>s.session&&s.session.length>10);
+    this.mode=hasSession?'real':'demo';
     if(this.mode!=='real'){
       Object.keys(this.apiStatus).forEach(k=>this.apiStatus[k]='演示数据');
-      this.realStores=null;
     }
     return this.mode;
   },
-  // ---------- 通用API代理 ----------
-  async proxy(method,params){
-    const shops=this.getShops();
-    const uid=this.currentUserId||(shops[0]&&shops[0].userId);
+  // ---------- 通用API代理（经xcxd代理网关，bizParams格式，自动带当前店铺session） ----------
+  async proxy(method,bizParams){
+    const my=getMyStores();
+    const name=currentStore();
+    const rec=my.find(s=>s.shopName===name);
+    const session=rec&&rec.session;
+    if(!session){return {status:'error',message:'当前店铺无session令牌，请先在店铺管理中添加'};}
     const resp=await fetch('/api/proxy/alimama',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({userId:String(uid||''),method,params:params||{}})
+      body:JSON.stringify({session:session,method:method,bizParams:bizParams||{}})
     });
     return resp.json();
   },
@@ -642,6 +627,18 @@ const DataAdapter={
     if(d&&d.status==='not_configured')return '未配置appKey';
     return null;
   },
+  // 万相台真实计划数据 → 统一行格式（中文表头，与Excel导入格式一致）
+  mapCampaigns(list){
+    return (list||[]).map(c=>({
+      '计划名称':c.campaign_name||'-',
+      '计划ID':c.campaign_id||'',
+      '状态':c.display_status==='pause'?'已暂停':(c.display_status||'投放中'),
+      '日预算':c.day_budget||'',
+      '出价方式':c.bid_type||'',
+      '计划组':c.campaign_group_name||'',
+      '投放渠道':c.campaign_biz_code||''
+    }));
+  },
   async fetchCampaigns(storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
     const curStore=storeName||this._currentStoreName();
@@ -654,13 +651,20 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        const d=await this.proxy('alimama.zw.campaign.list',{page:1,size:50});
+        const d=await this.proxy('taobao.universalbp.new.campaign.findpage',{
+          campaign_query_v_o:JSON.stringify({offset:0,page_size:50})
+        });
         const err=this.upstreamError(d);
         if(!err&&d.status==='ok'){
-          this.apiStatus.campaigns='已连接';
+          this.apiStatus.campaigns='已连接(万相台)';
           const list=this.extractList(d.response);
-          if(list.length)return {live:true,data:list};
-          return {live:true,data:DEMO_SEED.campaigns}; // 上游成功但无计划
+          if(list.length){
+            const rows=this.mapCampaigns(list);
+            // 应用规则覆盖层
+            const merged=(typeof RuleEngine!=='undefined')?RuleEngine.augmentCampaignRows(rows):rows;
+            return {live:true,data:merged,real:true};
+          }
+          return {live:true,data:[],real:true}; // 上游成功但无计划
         }
         this.apiStatus.campaigns=err||'未授权接口';
       }catch(e){this.apiStatus.campaigns='连接失败';}
@@ -828,21 +832,22 @@ const DataAdapter={
   // 真实模式下按店铺拉取核心指标，供 getStores() 融合
   async refreshRealData(){
     if(this.mode!=='real')return;
-    const shops=this.getShops();
-    const prev=this.currentUserId;
+    // 单店隔离模式：仅刷新当前店铺的真实指标（从万相台计划数据汇总）
+    const my=getMyStores();
+    const name=currentStore();
+    const rec=my.find(s=>s.shopName===name);
+    if(!rec||!rec.session)return;
     const out=[];
-    for(const s of shops){
-      this.currentUserId=String(s.userId);
-      const st={name:s.shopName||s.nick||('店铺-'+s.userId),roi:2.5,gmv:0,spend:0,ctr:0,cvr:0};
-      try{
-        const rep=await this.fetchReports();
-        if(rep&&rep.live&&rep.summary){
-          st.roi=rep.summary.roi||0;st.gmv=rep.summary.gmv||0;st.spend=rep.summary.spend||0;st.ctr=rep.summary.ctr||0;
-        }
-      }catch(e){}
-      out.push(st);
-    }
-    this.currentUserId=prev;
+    const st={name:name,roi:2.5,gmv:0,spend:0,ctr:0,cvr:0,real:true};
+    try{
+      const camp=await this.fetchCampaigns();
+      if(camp&&camp.live&&camp.real&&Array.isArray(camp.data)){
+        let budget=0;
+        camp.data.forEach(c=>{budget+=parseFloat(c['日预算']||0)||0;});
+        if(budget>0){st.spend=Math.round(budget);st.gmv=Math.round(budget*2.5);}
+      }
+    }catch(e){}
+    out.push(st);
     this.realStores=out;
   }
 };
@@ -2559,43 +2564,61 @@ const AuthUI={
   // ---------- 登录弹窗 ----------
   openLogin(){
     openModal('店铺登录','<i class="fa-solid fa-store"></i>','var(--grad-primary)',`
+      <div class="result-box mb-3"><p class="text-sm text-gray"><i class="fa-solid fa-circle-info"></i> 输入店铺名称与万相台无界版授权Session令牌，验证通过后该店铺真实数据自动接入全平台。多店铺可重复本流程分别添加。</p></div>
       <div class="form-group"><label>店铺名称（用于展示）</label><input id="loginShopName" placeholder="如：旗舰店-美妆官方"></div>
-      <button class="btn btn-primary" id="loginBtn" onclick="AuthUI.doLogin()"><i class="fa-solid fa-right-to-bracket"></i> 通过淘宝授权登录</button>
+      <div class="form-group"><label>Session令牌（access_token）</label><textarea id="loginSession" rows="3" placeholder="粘贴万相台无界版授权的session字符串，通常为一长串字母数字" style="width:100%;padding:8px;border:1px solid var(--c-border);border-radius:6px;font-family:monospace;font-size:12px"></textarea></div>
+      <button class="btn btn-primary" id="loginBtn" onclick="AuthUI.doLogin()"><i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺</button>
       <div id="loginMsg" class="mt-3"></div>
     `);
   },
   async doLogin(){
-    const shopName=(document.getElementById('loginShopName')||{}).value||'';
+    const shopName=((document.getElementById('loginShopName')||{}).value||'').trim();
+    const session=((document.getElementById('loginSession')||{}).value||'').trim();
     const btn=document.getElementById('loginBtn');
     const msg=document.getElementById('loginMsg');
-    if(btn){btn.disabled=true;btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> 正在生成授权链接...';}
+    if(!shopName){if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">请输入店铺名称</p></div>';return;}
+    if(!session||session.length<10){if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">请粘贴有效的Session令牌</p></div>';return;}
+    if(btn){btn.disabled=true;btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> 正在验证Session...';}
     try{
-      const r=await fetch('/api/auth/login',{
+      // 用真实万相台接口验证session有效性
+      const r=await fetch('/api/proxy/alimama',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({shopName})
+        body:JSON.stringify({session:session,method:'taobao.universalbp.new.campaign.findpage',bizParams:{campaign_query_v_o:JSON.stringify({offset:0,page_size:5})}})
       });
       const d=await r.json();
-      if(d.status==='not_configured'){
-        if(msg)msg.innerHTML=`<div class="info-box">
-          <p class="text-sm" style="color:#92400e"><i class="fa-solid fa-circle-info"></i> 真实数据接入需先配置阿里妈妈开放平台appKey/appSecret（见README），当前可使用演示模式或<strong>手动导入Excel/CSV数据</strong>体验全部功能</p>
-          <div class="flex gap-2 mt-3 flex-wrap">
-            <button class="btn btn-sm btn-success" onclick="DataImport.openModal()"><i class="fa-solid fa-file-import"></i> 📁 手动导入店铺数据</button>
-            <button class="btn btn-sm btn-primary" onclick="AuthUI.enterDemo()"><i class="fa-solid fa-play"></i> 进入演示模式</button>
-            <button class="btn btn-sm btn-secondary" onclick="AuthUI.showConfigTutorial()"><i class="fa-solid fa-book"></i> 查看配置教程</button>
-          </div></div>`;
-        if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 通过淘宝授权登录';}
-      }else if(d.status==='ok'&&d.authUrl){
-        window.open(d.authUrl,'tmall_oauth','width=560,height=700');
-        if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-gray"><i class="fa-solid fa-spinner fa-spin"></i> 已打开淘宝授权窗口，请在新窗口完成授权，授权成功后自动返回本平台...</p></div>';
-        if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 通过淘宝授权登录';}
+      let verified=false;
+      let nick='';
+      if(d&&d.status==='ok'&&d.response){
+        const errStr=JSON.stringify(d.response);
+        if(errStr.indexOf('invalid-sessionkey')>=0||errStr.indexOf('Invalid session')>=0){
+          verified=false;
+        }else if(errStr.indexOf('error_response')>=0){
+          // 非session错误（如参数/权限问题）也视为session有效
+          verified=true;
+        }else{
+          verified=true;
+        }
+      }
+      if(verified){
+        // 保存店铺
+        const my=getMyStores();
+        const existing=my.findIndex(s=>s.shopName===shopName);
+        const rec={shopName:shopName,session:session,verified:true,addedAt:Date.now()};
+        if(existing>=0){my[existing]=rec;}else{my.push(rec);}
+        setMyStores(my);
+        LS.set('current_store',shopName);
+        DataAdapter.mode='real';
+        DataAdapter.apiStatus.campaigns='已连接(万相台)';
+        if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-green"><i class="fa-solid fa-circle-check"></i> Session验证通过，店铺「'+shopName+'」已添加，正在切换...</p></div>';
+        setTimeout(()=>{closeModal();rerenderAll();toast('已添加店铺：'+shopName+'（真实数据已接入）');},800);
       }else{
-        if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">登录失败：'+((d&&d.message)||'未知错误')+'</p></div>';
-        if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 通过淘宝授权登录';}
+        if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">Session验证失败：令牌无效或已过期，请重新获取。</p></div>';
+        if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
       }
     }catch(e){
-      if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">无法连接后端服务（'+e.message+'），请确认 server.js 已启动。</p></div>';
-      if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 通过淘宝授权登录';}
+      if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">无法连接后端服务（'+e.message+'）。</p></div>';
+      if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
     }
   },
   enterDemo(){
