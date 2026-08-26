@@ -538,6 +538,10 @@ const DataAdapter={
   currentUserId:null,
   realStores:null, // 真实模式下各店铺指标缓存
   metricsCache:{}, // 真实API指标缓存: storeName -> {spend,gmv,roi,ctr,cvr,campaignCount,creativeCount,ts}
+  realCampaigns:[], // 万相台真实计划列表缓存
+  realCreatives:[], // 万相台真实创意列表缓存
+  realReports:[], // 万相台真实报表行缓存
+  diagLog:[], // 数据拉取诊断日志
   apiStatus:{campaigns:'演示数据',reports:'演示数据',keywords:'演示数据',audiences:'演示数据',creatives:'演示数据',sycm:'演示数据'},
   importedData:{}, // key: storeName_dataType -> {rows, headers, importedAt, fileName, dataType, storeName}
   // ---------- 导入数据辅助方法 ----------
@@ -621,8 +625,9 @@ const DataAdapter={
   extractList(resp){
     if(!resp||typeof resp!=='object')return[];
     let best=[];
+    // 万相台响应嵌套较深（campaign_v_o在6-7层），深度上限设为12
     const scan=(o,depth)=>{
-      if(!o||typeof o!=='object'||depth>4)return;
+      if(!o||typeof o!=='object'||depth>12)return;
       if(Array.isArray(o)){if(o.length>best.length)best=o;return;}
       Object.values(o).forEach(v=>scan(v,depth+1));
     };
@@ -872,7 +877,10 @@ const DataAdapter={
     const my=getMyStores();
     const name=currentStore();
     const rec=my.find(s=>s.shopName===name);
-    if(!rec||!rec.session)return;
+    if(!rec||!rec.session){this.diagLog=[{t:new Date().toLocaleTimeString(),ok:false,msg:'当前店铺无session，跳过拉取'}];return;}
+    this.diagLog=[];
+    const log=(ok,msg)=>{this.diagLog.push({t:new Date().toLocaleTimeString(),ok,msg});};
+    log(true,'开始拉取：'+name);
     const out=[];
     const st={name:name,roi:0,gmv:0,spend:0,ctr:0,cvr:0,real:true};
     const cache={spend:0,gmv:0,roi:0,ctr:0,cvr:0,campaignCount:0,creativeCount:0,ts:Date.now()};
@@ -884,27 +892,37 @@ const DataAdapter={
         st.spend=rep.summary.spend||0;st.gmv=rep.summary.gmv||0;st.roi=rep.summary.roi||0;st.ctr=rep.summary.ctr||0;
         cache.spend=st.spend;cache.gmv=st.gmv;cache.roi=st.roi;cache.ctr=st.ctr;
         this.realReports=rep.rows||[];
+        log(true,'报表拉取成功：'+this.realReports.length+'行，花费'+Math.round(st.spend)+'元');
+      }else{
+        log(false,'报表拉取失败：'+((rep&&rep.summary&&rep.summary.note)||this.apiStatus.reports));
       }
-    }catch(e){}
+    }catch(e){log(false,'报表异常：'+e.message);}
     try{
       // 2. 真实计划列表（全量缓存，供各技能直接使用）
       const camp=await this.fetchCampaigns();
       if(camp&&camp.live&&Array.isArray(camp.data)){
         cache.campaignCount=camp.data.length;
         this.realCampaigns=camp.data;
+        log(true,'计划拉取成功：'+camp.data.length+'个');
+      }else{
+        log(false,'计划拉取失败：'+this.apiStatus.campaigns);
       }
-    }catch(e){}
+    }catch(e){log(false,'计划异常：'+e.message);}
     try{
       // 3. 真实创意列表（全量缓存）
       const cr=await this.fetchCreatives();
       if(cr&&cr.live&&Array.isArray(cr.data)){
         cache.creativeCount=cr.data.length;
         this.realCreatives=cr.data;
+        log(true,'创意拉取成功：'+cr.data.length+'个');
+      }else{
+        log(false,'创意拉取失败：'+this.apiStatus.creatives);
       }
-    }catch(e){}
+    }catch(e){log(false,'创意异常：'+e.message);}
     this.metricsCache[name]=cache;
     out.push(st);
     this.realStores=out;
+    log(true,'拉取流程完成，缓存已更新');
     // 数据到位后刷新总览与状态栏
     try{renderOverview();if(typeof AuthUI!=='undefined'){AuthUI.renderTopbar();AuthUI.renderStatusPill();}}catch(e){}
   }
@@ -2813,15 +2831,56 @@ const AuthUI={
     const hasImported=DataAdapter.hasAnyImportedData();
     if(real){
       el.className='status-pill live';
-      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 阿里妈妈API(已连接)';
+      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 阿里妈妈API(已连接) <span style="opacity:.7;font-size:10px" onclick="event.stopPropagation();AuthUI.showDiag()" title="点击诊断">⚙</span>';
     }else if(hasImported){
       el.className='status-pill live';
-      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 导入数据';
+      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 导入数据 <span style="opacity:.7;font-size:10px" onclick="event.stopPropagation();AuthUI.showDiag()" title="点击诊断">⚙</span>';
     }else{
       el.className='status-pill';
-      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 演示数据';
+      el.innerHTML='<i class="fa-solid fa-circle" style="font-size:8px"></i> 数据源: 演示数据 <span style="opacity:.7;font-size:10px" onclick="event.stopPropagation();AuthUI.showDiag()" title="点击诊断">⚙</span>';
     }
     el.onclick=()=>AuthUI.showSourcePanel();
+  },
+  // ---------- 自诊断面板 ----------
+  showDiag(){
+    const my=getMyStores();
+    const cur=currentStore();
+    const rec=my.find(s=>s.shopName===cur);
+    const diag=DataAdapter.diagLog||[];
+    const cache=DataAdapter.metricsCache[cur]||null;
+    openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
+      <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
+        <table class="data-table"><tbody>
+          <tr><td>平台版本</td><td>V12</td></tr>
+          <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
+          <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
+          <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
+          <tr><td>当前店铺</td><td>${cur||'无'} ${rec&&rec.session?'<span class="badge badge-green">有session</span>':'<span class="badge badge-red">无session</span>'}</td></tr>
+          <tr><td>指标缓存</td><td>${cache?JSON.stringify(cache):'<span class="text-red">空（refreshRealData未成功）</span>'}</td></tr>
+          <tr><td>计划缓存</td><td>${(DataAdapter.realCampaigns||[]).length}个</td></tr>
+          <tr><td>创意缓存</td><td>${(DataAdapter.realCreatives||[]).length}个</td></tr>
+          <tr><td>报表缓存</td><td>${(DataAdapter.realReports||[]).length}行</td></tr>
+          <tr><td>API状态</td><td style="font-size:12px">${JSON.stringify(DataAdapter.apiStatus)}</td></tr>
+        </tbody></table>
+      </div>
+      <div class="result-box mb-3"><h4 class="mb-2">执行日志</h4>
+        ${diag.length?diag.map(d=>`<p class="text-xs" style="margin:2px 0"><span class="text-gray">${d.t}</span> ${d.ok?'<i class="fa-solid fa-check text-green"></i>':'<i class="fa-solid fa-xmark text-red"></i>'} ${d.msg}</p>`).join(''):'<p class="text-xs text-gray">无日志（页面加载后未触发数据拉取）</p>'}
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="AuthUI.runDiagNow()"><i class="fa-solid fa-rotate"></i> 立即重新拉取真实数据</button>
+      <div id="diagResult" class="mt-3"></div>
+    `);
+  },
+  async runDiagNow(){
+    const out=document.getElementById('diagResult');
+    if(out)out.innerHTML='<p class="text-sm"><i class="fa-solid fa-spinner fa-spin"></i> 正在拉取...</p>';
+    try{
+      await DataAdapter.refreshRealData();
+      const cache=DataAdapter.metricsCache[currentStore()];
+      if(out)out.innerHTML=`<div class="result-box"><p class="text-sm text-green"><i class="fa-solid fa-circle-check"></i> 拉取完成：花费${(cache&&cache.spend)||0}元，${(DataAdapter.realCampaigns||[]).length}个计划，${(DataAdapter.realCreatives||[]).length}个创意，${(DataAdapter.realReports||[]).length}行报表</p><button class="btn btn-sm btn-primary mt-2" onclick="AuthUI.showDiag()">刷新诊断视图</button></div>`;
+      toast('真实数据已重新拉取');
+    }catch(e){
+      if(out)out.innerHTML=`<div class="result-box"><p class="text-sm text-red">拉取失败：${e.message}</p></div>`;
+    }
   },
   showSourcePanel(){
     const real=DataAdapter.mode==='real';
