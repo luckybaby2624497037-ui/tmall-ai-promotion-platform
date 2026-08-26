@@ -25,7 +25,7 @@ const OAUTH_AUTHORIZE_URL = 'https://oauth.taobao.com/authorize';
 const OAUTH_TOKEN_URL = 'https://oauth.taobao.com/token';
 const OPEN_API_GATEWAY = 'https://eco.taobao.com/router/rest';
 // 万相台无界版代理网关（内部代理，支持bizParams业务参数透传）
-const XCXD_PROXY_URL = process.env.XCXD_PROXY_URL || 'http://one-fmw.xcxd.cn/api/proxy/universalbp';
+const XCXD_PROXY_URL = process.env.XCXD_PROXY_URL || 'https://one-fmw.xcxd.cn/api/proxy/universalbp';
 
 // ===================== 内存存储 =====================
 // OAuth state -> { shopName, createdAt }
