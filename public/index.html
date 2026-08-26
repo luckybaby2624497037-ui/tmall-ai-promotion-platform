@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台</div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V12</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -876,26 +876,30 @@ const DataAdapter={
     const out=[];
     const st={name:name,roi:0,gmv:0,spend:0,ctr:0,cvr:0,real:true};
     const cache={spend:0,gmv:0,roi:0,ctr:0,cvr:0,campaignCount:0,creativeCount:0,ts:Date.now()};
+    this.realCampaigns=[];this.realCreatives=[];this.realReports=[];
     try{
       // 1. 真实报表（花费汇总，近7天）
       const rep=await this.fetchReports();
       if(rep&&rep.live&&rep.summary){
         st.spend=rep.summary.spend||0;st.gmv=rep.summary.gmv||0;st.roi=rep.summary.roi||0;st.ctr=rep.summary.ctr||0;
         cache.spend=st.spend;cache.gmv=st.gmv;cache.roi=st.roi;cache.ctr=st.ctr;
+        this.realReports=rep.rows||[];
       }
     }catch(e){}
     try{
-      // 2. 真实计划数
+      // 2. 真实计划列表（全量缓存，供各技能直接使用）
       const camp=await this.fetchCampaigns();
       if(camp&&camp.live&&Array.isArray(camp.data)){
         cache.campaignCount=camp.data.length;
+        this.realCampaigns=camp.data;
       }
     }catch(e){}
     try{
-      // 3. 真实创意数
+      // 3. 真实创意列表（全量缓存）
       const cr=await this.fetchCreatives();
       if(cr&&cr.live&&Array.isArray(cr.data)){
         cache.creativeCount=cr.data.length;
+        this.realCreatives=cr.data;
       }
     }catch(e){}
     this.metricsCache[name]=cache;
@@ -1342,15 +1346,36 @@ function renderS6(mod,skill){
     <div id="s6Tasks"></div>
   `,mb=>s6Render());
 }
-function s6Render(){const tasks=LS.get('s6tasks',[]);document.getElementById('s6Tasks').innerHTML=tasks.length?`<table class="data-table"><thead><tr><th>店铺</th><th>报表类型</th><th>进度</th><th>状态</th></tr></thead><tbody>${tasks.map(t=>`<tr><td>${t.store}</td><td>${t.type}</td><td><div class="progress" style="width:100px"><div class="progress-bar" style="width:${t.progress}%;background:${t.status==='失败'?'var(--c-red)':t.status==='完成'?'var(--c-green)':'var(--c-blue)'}"></div></div></td><td><span class="badge ${t.status==='完成'?'badge-green':t.status==='失败'?'badge-red':'badge-blue'}">${t.status}</span></td></tr>`).join('')}</tbody></table>`:'<p class="text-gray text-sm">暂无任务，点击"启动拉取"开始</p>';}
-function s6Start(){const store=document.getElementById('s6Store').value;const type=document.getElementById('s6Type').value;const tasks=LS.get('s6tasks',[]);const task={store,type,progress:0,status:'运行中'};tasks.push(task);LS.set('s6tasks',tasks);s6Render();const idx=tasks.length-1;const timer=setInterval(()=>{task.progress+=Math.random()*20+5;if(task.progress>=100){task.progress=100;task.status=Math.random()>0.1?'完成':'失败';clearInterval(timer);}tasks[idx]=task;LS.set('s6tasks',tasks);s6Render();},500);toast('拉取任务已启动');}
+function s6Render(){const tasks=LS.get('s6tasks',[]);document.getElementById('s6Tasks').innerHTML=(DataAdapter.mode==='real'?'<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 真实模式：启动拉取将从万相台获取真实报表数据</p>':'')+(tasks.length?`<table class="data-table"><thead><tr><th>店铺</th><th>报表类型</th><th>进度</th><th>数据行</th><th>状态</th></tr></thead><tbody>${tasks.map(t=>`<tr><td>${t.store}</td><td>${t.type}</td><td><div class="progress" style="width:100px"><div class="progress-bar" style="width:${t.progress}%;background:${t.status==='失败'?'var(--c-red)':t.status==='完成'||t.status.indexOf('完成')===0?'var(--c-green)':'var(--c-blue)'}"></div></div></td><td>${t.rows||'-'}</td><td><span class="badge ${t.status==='失败'?'badge-red':t.status.indexOf('完成')===0?'badge-green':'badge-blue'}">${t.status}</span></td></tr>`).join('')}</tbody></table>`:'<p class="text-gray text-sm">暂无任务，点击"启动拉取"开始</p>');}
+function s6Start(){
+  const store=document.getElementById('s6Store').value;const type=document.getElementById('s6Type').value;
+  if(DataAdapter.mode!=='real'){toast('演示模式下为模拟任务，添加授权店铺后可拉取真实报表');}
+  const tasks=LS.get('s6tasks',[]);const task={store,type,progress:0,status:'运行中',rows:0};tasks.push(task);LS.set('s6tasks',tasks);s6Render();
+  const idx=tasks.length-1;
+  const timer=setInterval(()=>{
+    task.progress+=Math.random()*25+8;
+    if(task.progress>=100){
+      task.progress=100;
+      // 真实模式：从已缓存的万相台报表写入行数
+      task.rows=(DataAdapter.realReports||[]).length;
+      task.status=task.rows>0?'完成':(DataAdapter.mode==='real'?'完成(无数据)':'完成');
+      clearInterval(timer);
+      if(DataAdapter.mode==='real'&&task.rows===0){
+        // 缓存为空时实时拉一次
+        DataAdapter.refreshRealData().then(()=>{task.rows=(DataAdapter.realReports||[]).length;s6Render();}).catch(()=>{});
+      }
+    }
+    tasks[idx]=task;LS.set('s6tasks',tasks);s6Render();
+  },400);
+  toast(DataAdapter.mode==='real'?'正在从万相台拉取真实报表...':'模拟拉取任务已启动');
+}
 
 // ===== S7: 跨店铺数据聚合看板 =====
 function renderS7(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`<div class="mb-3"><label class="text-sm font-bold mb-2">选择店铺：</label><div id="s7Stores" class="flex flex-wrap gap-2"></div></div><div id="s7Dashboard"></div>`,mb=>s7Init());
 }
 function s7Init(){const stores=getCompareStores();document.getElementById('s7Stores').innerHTML=stores.map((s,i)=>`<span class="pill active" data-idx="${i}" onclick="this.classList.toggle('active');s7Update()">${s.name}</span>`).join('');s7Update();}
-function s7Update(){const stores=getCompareStores();const active=[...document.querySelectorAll('#s7Stores .pill.active')].map(p=>stores[parseInt(p.dataset.idx)]);if(!active.length){document.getElementById('s7Dashboard').innerHTML='<p class="text-gray text-sm">请至少选择一个店铺</p>';return;}const tGMV=active.reduce((s,st)=>s+st.gmv,0);const tSpend=active.reduce((s,st)=>s+st.spend,0);const aROI=(tGMV/tSpend).toFixed(2);const aCTR=(active.reduce((s,st)=>s+st.ctr,0)/active.length).toFixed(2);document.getElementById('s7Dashboard').innerHTML=`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px"><div class="kpi-card"><div class="v text-blue">${(tGMV/10000).toFixed(1)}万</div><div class="l">总GMV</div></div><div class="kpi-card"><div class="v text-orange">${(tSpend/10000).toFixed(1)}万</div><div class="l">总花费</div></div><div class="kpi-card"><div class="v text-green">${aROI}</div><div class="l">综合ROI</div></div><div class="kpi-card"><div class="v text-purple">${aCTR}%</div><div class="l">平均CTR</div></div></div><div class="mt-4"><h4 class="mb-2">GMV分布</h4>${barChart(active.map(s=>({label:s.name.slice(0,6),value:s.gmv})))}</div><div class="mt-4"><h4 class="mb-2">花费占比</h4>${pieChart(active.map(s=>({label:s.name.slice(0,6),value:s.spend})))}</div>`;}
+function s7Update(){const stores=getCompareStores();const active=[...document.querySelectorAll('#s7Stores .pill.active')].map(p=>stores[parseInt(p.dataset.idx)]);if(!active.length){document.getElementById('s7Dashboard').innerHTML='<p class="text-gray text-sm">请至少选择一个店铺</p>';return;}const tGMV=active.reduce((s,st)=>s+st.gmv,0);const tSpend=active.reduce((s,st)=>s+st.spend,0);const aROI=tSpend>0?(tGMV/tSpend).toFixed(2):'-';const aCTR=(active.reduce((s,st)=>s+st.ctr,0)/active.length).toFixed(2);const realNote=DataAdapter.mode==='real'&&tSpend>0?'<p class="text-xs text-gray mt-2"><i class="fa-solid fa-circle-check text-green"></i> 花费为万相台真实数据（近7天）；GMV/ROI等指标需补申请报表字段权限后显示</p>':'';document.getElementById('s7Dashboard').innerHTML=`${realNote}<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px"><div class="kpi-card"><div class="v text-blue">${tGMV>0?(tGMV/10000).toFixed(1)+'万':'-'}</div><div class="l">总GMV</div></div><div class="kpi-card"><div class="v text-orange">${(tSpend/10000).toFixed(1)}万</div><div class="l">总花费</div></div><div class="kpi-card"><div class="v text-green">${aROI}</div><div class="l">综合ROI</div></div><div class="kpi-card"><div class="v text-purple">${aCTR}%</div><div class="l">平均CTR</div></div></div><div class="mt-4"><h4 class="mb-2">GMV分布</h4>${tGMV>0?barChart(active.map(s=>({label:s.name.slice(0,6),value:s.gmv}))):'<p class="text-xs text-gray">GMV数据待补权限</p>'}</div><div class="mt-4"><h4 class="mb-2">花费占比</h4>${tSpend>0?pieChart(active.map(s=>({label:s.name.slice(0,6),value:s.spend}))):'<p class="text-xs text-gray">暂无数据</p>'}</div>`;}
 
 // ===== S8: 店铺间横向对比报表 =====
 function renderS8(mod,skill){
@@ -1408,9 +1433,28 @@ function renderS12(mod,skill){
 }
 function s12Render(){
   const store=getStores()[document.getElementById('s12Store').selectedIndex];
+  // 真实数据优先：万相台计划列表 + 报表花费
+  if(DataAdapter.realCampaigns&&DataAdapter.realCampaigns.length){
+    const repMap={};(DataAdapter.realReports||[]).forEach(r=>{if(r.campaign)repMap[r.campaign]=r.cost;});
+    const toggles=LS.get('s12real_'+(currentStore()||'demo'),{});
+    const plans=DataAdapter.realCampaigns.map(c=>{
+      const off=toggles[c['计划名称']]===false;
+      return {name:c['计划名称'],id:c['计划ID'],on:!off&&c['状态'].indexOf('停')<0,
+        roi:0,spend:Math.round(repMap[c['计划名称']]||0),budget:c['日预算'],statusTxt:c['状态'],real:true};
+    });
+    document.getElementById('s12Plans').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实数据：${plans.length}个计划（花费为近7天真实数据，GMV/ROI需补申请报表权限后显示）</p><table class="data-table"><thead><tr><th>计划名</th><th>状态</th><th>日预算</th><th>近7天花费</th><th>开关</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td><td>¥${p.budget}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12RealToggle('${p.name.replace(/'/g,"\\'")}',this)"></div></td></tr>`).join('')}</tbody></table>`;
+    return;
+  }
   const plans=LS.get('s12plans_'+store.name,[{name:'爆款引流-计划A',on:true,roi:3.5,spend:1200},{name:'品牌词-计划B',on:true,roi:1.8,spend:800},{name:'竞品拦截-计划C',on:false,roi:0.9,spend:300},{name:'长尾词-计划D',on:true,roi:2.2,spend:500}]);
-  document.getElementById('s12Plans').innerHTML=`<table class="data-table"><thead><tr><th>计划名</th><th>当前ROI</th><th>今日花费</th><th>状态</th><th>操作</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td>${p.roi}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12Toggle(${i})"></div></td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('s12Plans').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-info"></i> 演示数据（添加授权店铺后自动显示真实计划）</p><table class="data-table"><thead><tr><th>计划名</th><th>当前ROI</th><th>今日花费</th><th>状态</th><th>操作</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td>${p.roi}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12Toggle(${i})"></div></td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td></tr>`).join('')}</tbody></table>`;
   LS.set('s12plans_'+store.name,plans);
+}
+function s12RealToggle(name,el){
+  const key='s12real_'+(currentStore()||'demo');
+  const toggles=LS.get(key,{});
+  toggles[name]=el.classList.contains('on');
+  LS.set(key,toggles);
+  toast('「'+name+'」开关已变更（本地生效，写入万相台需开通写权限）');
 }
 function s12Toggle(i){const store=getStores()[document.getElementById('s12Store').selectedIndex];const plans=LS.get('s12plans_'+store.name,[]);plans[i].on=!plans[i].on;LS.set('s12plans_'+store.name,plans);s12Render();}
 function s12Eval(){
@@ -1683,9 +1727,16 @@ function renderS30(mod,skill){
 }
 function s30Render(){
   const type=document.getElementById('s30Type').value;
+  // 真实创意优先（万相台创意库）
+  if(DataAdapter.realCreatives&&DataAdapter.realCreatives.length){
+    const cr=DataAdapter.realCreatives;
+    const filtered=type?cr.filter(c=>c['格式类型']===type||(type==='图片'&&c['格式类型']==='图片')):cr;
+    document.getElementById('s30Grid').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实创意库：共${cr.length}个创意${type?'（筛选'+type+'后'+filtered.length+'个）':''}</p><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">${filtered.slice(0,60).map(c=>`<div style="border:1px solid var(--c-border);border-radius:8px;overflow:hidden"><div style="height:80px;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px"><i class="fa-solid ${c['格式类型']==='图片'?'fa-image':'fa-photo-film'}"></i></div><div style="padding:8px"><div class="text-sm font-bold" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c['创意名称']}">${c['创意名称']}</div><div class="text-xs text-gray">${c['格式类型']} · ${c['审核状态']==='NP'?'审核通过':c['审核状态']}</div><div class="text-xs text-gray">${c['创建时间']}</div></div></div>`).join('')}</div>${cr.length>60?'<p class="text-xs text-gray mt-2">仅展示前60个，共'+cr.length+'个创意</p>':''}`;
+    return;
+  }
   const assets=LS.get('s30assets',[{name:'夏季大促主图',type:'图片',cat:'美妆',color:'#667eea'},{name:'补水面膜视频',type:'视频',cat:'美妆',color:'#10b981'},{name:'美白精华文案',type:'文案',cat:'美妆',color:'#f59e0b'},{name:'母婴节主图',type:'图片',cat:'母婴',color:'#3b82f6'},{name:'零食礼包视频',type:'视频',cat:'食品',color:'#ef4444'},{name:'家电促销文案',type:'文案',cat:'家电',color:'#8b5cf6'},{name:'数码主图',type:'图片',cat:'数码',color:'#ec4899'},{name:'服饰换季视频',type:'视频',cat:'服饰',color:'#14b8a6'}]);
   const filtered=type?assets.filter(a=>a.type===type):assets;
-  document.getElementById('s30Grid').innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px">${filtered.map((a,i)=>`<div style="border:1px solid var(--c-border);border-radius:8px;overflow:hidden;cursor:pointer"><div style="height:100px;background:${a.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px"><i class="fa-solid ${a.type==='图片'?'fa-image':a.type==='视频'?'fa-video':'fa-file-lines'}"></i></div><div style="padding:8px"><div class="text-sm font-bold">${a.name}</div><div class="text-xs text-gray">${a.type} · ${a.cat}</div><button class="btn btn-sm btn-danger mt-2" style="width:100%" onclick="s30Del(${assets.indexOf(a)})">删除</button></div></div>`).join('')}</div>`;
+  document.getElementById('s30Grid').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-info"></i> 演示素材（添加授权店铺后自动显示真实创意库）</p>`+`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px">${filtered.map((a,i)=>`<div style="border:1px solid var(--c-border);border-radius:8px;overflow:hidden;cursor:pointer"><div style="height:100px;background:${a.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px"><i class="fa-solid ${a.type==='图片'?'fa-image':a.type==='视频'?'fa-video':'fa-file-lines'}"></i></div><div style="padding:8px"><div class="text-sm font-bold">${a.name}</div><div class="text-xs text-gray">${a.type} · ${a.cat}</div><button class="btn btn-sm btn-danger mt-2" style="width:100%" onclick="s30Del(${assets.indexOf(a)})">删除</button></div></div>`).join('')}</div>`;
 }
 function s30Add(){const name=prompt('素材名称');if(!name)return;const type=prompt('类型(图片/视频/文案)','图片');const cat=prompt('品类','美妆');const assets=LS.get('s30assets',[]);assets.push({name,type,cat,color:COLORS[Math.floor(Math.random()*COLORS.length)]});LS.set('s30assets',assets);s30Render();toast('已上传');}
 function s30Del(i){const assets=LS.get('s30assets',[]);assets.splice(i,1);LS.set('s30assets',assets);s30Render();toast('已删除');}
