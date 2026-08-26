@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V13</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V14</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -507,6 +507,12 @@ function crossStoreBarHtml(modId,skillId){
   </div>`;
 }
 // ============ 数据适配层 ============
+// 万相台无界版营销场景编码（top_service_context.biz_code）
+// 已实测有效：onebpSearch=关键词推广 onebpDisplay=人群推广 onebpShortVideo=超级短视频
+// onebpLive=超级直播 onebpUnion=联盟 onebpItemMarketing/onebpActivityMarketing=货品/活动(当前0消耗)
+// 注：如发现新场景编码（如货品推广主力场景），加入SCENE_CODES即自动纳入聚合
+const SCENE_CODES=['onebpSearch','onebpDisplay','onebpShortVideo','onebpLive','onebpUnion','onebpItemMarketing','onebpActivityMarketing'];
+const SCENE_NAMES={'onebpSearch':'关键词推广','onebpDisplay':'人群推广','onebpShortVideo':'超级短视频','onebpLive':'超级直播','onebpUnion':'联盟广告','onebpItemMarketing':'货品推广','onebpActivityMarketing':'活动推广','onebpContentMarketing':'内容推广'};
 // 统一数据适配层：real 模式走后端 /api/proxy/alimama 调用阿里妈妈开放API，
 // demo 模式返回内置种子数据。所有技能通过 getStores()/DataAdapter 消费数据，自动切换。
 const DEMO_SEED={
@@ -608,16 +614,22 @@ const DataAdapter={
     return this.mode;
   },
   // ---------- 通用API代理（经xcxd代理网关，bizParams格式，自动带当前店铺session） ----------
-  async proxy(method,bizParams){
+  // scene: 可选营销场景biz_code，不传用默认onebpSearch
+  async proxy(method,bizParams,scene){
     const my=getMyStores();
     const name=currentStore();
     const rec=my.find(s=>s.shopName===name);
     const session=rec&&rec.session;
     if(!session){return {status:'error',message:'当前店铺无session令牌，请先在店铺管理中添加'};}
+    const bp=Object.assign({},bizParams||{});
+    // 注入场景上下文（保持调用方传入的top_service_context优先）
+    if(!bp.top_service_context){
+      bp.top_service_context=JSON.stringify({biz_code:scene||'onebpSearch',login_type:1});
+    }
     const resp=await fetch('/api/proxy/alimama',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({session:session,method:method,bizParams:bizParams||{}})
+      body:JSON.stringify({session:session,method:method,bizParams:bp})
     });
     return resp.json();
   },
@@ -652,8 +664,20 @@ const DataAdapter={
       '日预算':c.day_budget||'',
       '出价方式':c.bid_type||'',
       '计划组':c.campaign_group_name||'',
-      '投放渠道':c.campaign_biz_code||''
+      '投放渠道':(SCENE_NAMES[c.campaign_biz_code]||c.campaign_biz_code||'')
     }));
+  },
+  // 万相台真实计划数据（单场景，内部方法）
+  async fetchCampaignsOfScene(scene){
+    const d=await this.proxy('taobao.universalbp.new.campaign.findpage',{
+      campaign_query_v_o:JSON.stringify({offset:0,page_size:100})
+    },scene);
+    const err=this.upstreamError(d);
+    if(!err&&d.status==='ok'){
+      const list=this.extractList(d.response);
+      return this.mapCampaigns(list).map(r=>Object.assign(r,{'场景':SCENE_NAMES[scene]||scene}));
+    }
+    return [];
   },
   async fetchCampaigns(storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
@@ -667,22 +691,17 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        const d=await this.proxy('taobao.universalbp.new.campaign.findpage',{
-          campaign_query_v_o:JSON.stringify({offset:0,page_size:50})
-        });
-        const err=this.upstreamError(d);
-        if(!err&&d.status==='ok'){
-          this.apiStatus.campaigns='已连接(万相台)';
-          const list=this.extractList(d.response);
-          if(list.length){
-            const rows=this.mapCampaigns(list);
-            // 应用规则覆盖层
-            const merged=(typeof RuleEngine!=='undefined')?RuleEngine.augmentCampaignRows(rows):rows;
-            return {live:true,data:merged,real:true};
-          }
-          return {live:true,data:[],real:true}; // 上游成功但无计划
+        // 遍历全部营销场景拉取计划（关键词/人群/短视频/直播/联盟等）
+        let allRows=[];
+        for(const scene of SCENE_CODES){
+          try{
+            const rows=await this.fetchCampaignsOfScene(scene);
+            allRows=allRows.concat(rows);
+          }catch(e){}
         }
-        this.apiStatus.campaigns=err||'未授权接口';
+        this.apiStatus.campaigns=allRows.length?('已连接(万相台·'+allRows.length+'计划)'):'已连接(万相台)';
+        const merged=(typeof RuleEngine!=='undefined')?RuleEngine.augmentCampaignRows(allRows):allRows;
+        return {live:true,data:merged,real:true};
       }catch(e){this.apiStatus.campaigns='连接失败';}
       return {live:false,data:DEMO_SEED.campaigns};
     }
@@ -725,28 +744,42 @@ const DataAdapter={
     if(this.mode==='real'){
       try{
         // 万相台计划报表（当前应用权限仅开放charge花费字段；点击/展现等指标需补申请权限或Excel导入）
+        // 遍历全部营销场景聚合花费，与万相台后台"全部营销场景"口径对齐
         const start=(startDate||new Date(Date.now()-7*86400000).toISOString().slice(0,10));
         const end=(endDate||new Date().toISOString().slice(0,10));
-        const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
-          top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'campaign',query_field_in_list:'charge',offset:0,page_size:50})
-        });
-        const err=this.upstreamError(d);
-        if(!err&&d.status==='ok'){
-          this.apiStatus.reports='已连接(花费字段)';
-          const list=this.extractList(d.response);
-          if(list.length){
-            const rows=list.map(r=>({
-              date:end,store:currentStore()||'',campaign:r.campaign_name||'',
-              cost:+((r.report_index&&r.report_index.charge)||0),gmv:0,roi:0,ctr:0,cvr:0,clicks:0,impressions:0,
-              item:r.promotion_name||''
-            }));
-            const summary=this.summarize(rows);
-            summary.note='当前应用权限仅含花费(charge)字段；点击/展现/GMV等指标需在淘宝开放平台补申请权限，或用Excel导入补全';
-            return {live:true,rows,summary,real:true};
-          }
-          return {live:true,rows:[],summary:this.summarize([]),real:true};
+        const rows=[];
+        let sceneOk=0,sceneTotal=0;
+        for(const scene of SCENE_CODES){
+          try{
+            const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
+              top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'campaign',query_field_in_list:'charge',offset:0,page_size:50})
+            },scene);
+            const err=this.upstreamError(d);
+            if(!err&&d.status==='ok'){
+              sceneOk++;
+              const list=this.extractList(d.response);
+              list.forEach(r=>{
+                const c=+(r.report_index&&r.report_index.charge)||0;
+                if(c>0||r.campaign_name){
+                  sceneTotal+=c;
+                  rows.push({
+                    date:end,store:currentStore()||'',campaign:r.campaign_name||'',
+                    cost:c,gmv:0,roi:0,ctr:0,cvr:0,clicks:0,impressions:0,
+                    item:r.promotion_name||'',scene:SCENE_NAMES[scene]||scene
+                  });
+                }
+              });
+            }
+          }catch(e){}
         }
-        this.apiStatus.reports=err||'未授权接口';
+        if(sceneOk>0){
+          this.apiStatus.reports='已连接('+sceneOk+'场景·花费)';
+          const summary=this.summarize(rows);
+          summary.spend=Math.round(sceneTotal*100)/100;
+          summary.note='已聚合'+sceneOk+'个营销场景（'+SCENE_CODES.map(s=>SCENE_NAMES[s]||s).join('/')+'）；GMV/ROI/点击等指标需补申请报表字段权限或Excel导入补全';
+          return {live:true,rows,summary,real:true};
+        }
+        this.apiStatus.reports='未授权接口';
       }catch(e){this.apiStatus.reports='连接失败';}
       const rows=this.seedReports();
       return {live:false,rows,summary:this.summarize(rows)};
@@ -776,17 +809,26 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        const d=await this.proxy('taobao.universalbp.new.creative.manage.findmanagepage',{
-          creative_query_v_o:JSON.stringify({offset:0,page_size:100})
-        });
-        const err=this.upstreamError(d);
-        if(!err&&d.status==='ok'){
-          this.apiStatus.creatives='已连接(万相台)';
-          const list=this.extractList(d.response);
-          if(list.length)return {live:true,data:this.mapCreatives(list),real:true};
-          return {live:true,data:[],real:true};
+        // 遍历营销场景拉取创意（创意库按场景隔离）
+        let all=[];
+        for(const scene of SCENE_CODES){
+          try{
+            const d=await this.proxy('taobao.universalbp.new.creative.manage.findmanagepage',{
+              creative_query_v_o:JSON.stringify({offset:0,page_size:100})
+            },scene);
+            const err=this.upstreamError(d);
+            if(!err&&d.status==='ok'){
+              const list=this.extractList(d.response);
+              all=all.concat(this.mapCreatives(list).map(r=>Object.assign(r,{'场景':SCENE_NAMES[scene]||scene})));
+            }
+          }catch(e){}
         }
-        this.apiStatus.creatives=err||'未授权接口';
+        if(all.length){
+          this.apiStatus.creatives='已连接(万相台·'+all.length+'创意)';
+          return {live:true,data:all,real:true};
+        }
+        this.apiStatus.creatives='已连接(万相台·无创意)';
+        return {live:true,data:[],real:true};
       }catch(e){this.apiStatus.creatives='连接失败';}
       return {live:false,data:DEMO_SEED.creatives};
     }
@@ -1458,9 +1500,9 @@ function s12Render(){
     const plans=DataAdapter.realCampaigns.map(c=>{
       const off=toggles[c['计划名称']]===false;
       return {name:c['计划名称'],id:c['计划ID'],on:!off&&c['状态'].indexOf('停')<0,
-        roi:0,spend:Math.round(repMap[c['计划名称']]||0),budget:c['日预算'],statusTxt:c['状态'],real:true};
+        roi:0,spend:Math.round(repMap[c['计划名称']]||0),budget:c['日预算'],statusTxt:c['状态'],real:true,scene:c['场景']||c['投放渠道']||''};
     });
-    document.getElementById('s12Plans').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实数据：${plans.length}个计划（花费为近7天真实数据，GMV/ROI需补申请报表权限后显示）</p><table class="data-table"><thead><tr><th>计划名</th><th>状态</th><th>日预算</th><th>近7天花费</th><th>开关</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td><td>¥${p.budget}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12RealToggle('${p.name.replace(/'/g,"\\'")}',this)"></div></td></tr>`).join('')}</tbody></table>`;
+    document.getElementById('s12Plans').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实数据：${plans.length}个计划（已聚合全部营销场景；花费为近7天真实数据，GMV/ROI需补申请报表权限后显示）</p><table class="data-table"><thead><tr><th>计划名</th><th>场景</th><th>状态</th><th>日预算</th><th>近7天花费</th><th>开关</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td><span class="badge badge-blue">${p.scene||p.channel||'-'}</span></td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td><td>¥${p.budget}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12RealToggle('${p.name.replace(/'/g,"\\'")}',this)"></div></td></tr>`).join('')}</tbody></table>`;
     return;
   }
   const plans=LS.get('s12plans_'+store.name,[{name:'爆款引流-计划A',on:true,roi:3.5,spend:1200},{name:'品牌词-计划B',on:true,roi:1.8,spend:800},{name:'竞品拦截-计划C',on:false,roi:0.9,spend:300},{name:'长尾词-计划D',on:true,roi:2.2,spend:500}]);
@@ -2851,7 +2893,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V13</td></tr>
+          <tr><td>平台版本</td><td>V14</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
