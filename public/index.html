@@ -450,7 +450,8 @@ function renderDemoBanner(){
   const el=document.getElementById('demoBanner');
   if(el)el.style.display=isDemoMode()?'flex':'none';
 }
-// 从导入数据构建某店铺指标（数据隔离取数基础；无导入数据则返回占位指标标记"未导入数据"）
+// 构建某店铺指标（数据隔离取数基础）
+// 优先级：Excel导入数据 > 万相台API实时缓存 > 占位指标
 function buildStoreMetrics(name){
   const camp=(typeof DataAdapter!=='undefined')?DataAdapter.getImportedData(name,'campaign_report'):null;
   if(camp&&camp.rows&&camp.rows.length){
@@ -461,6 +462,15 @@ function buildStoreMetrics(name){
       roi,gmv:Math.round(tGMV),spend:Math.round(tSpend),
       ctr:tImp>0?+(tClicks/tImp*100).toFixed(2):0,cvr:0,clicks:Math.round(tClicks),impressions:Math.round(tImp),
       health:roi>=2.5?85:70,real:true,imported:true};
+  }
+  // 万相台API实时指标缓存（refreshRealData拉取）
+  const cache=(typeof DataAdapter!=='undefined')?DataAdapter.metricsCache[name]:null;
+  if(cache&&(cache.spend>0||cache.campaignCount>0)){
+    return {name,status:'已授权',expire:'长期',quota:8000,quotaMax:10000,
+      roi:cache.roi||0,gmv:Math.round(cache.gmv||0),spend:Math.round(cache.spend||0),
+      ctr:cache.ctr||0,cvr:cache.cvr||0,clicks:0,impressions:0,
+      health:(cache.roi>=2.5?85:70),real:true,apiReal:true,
+      campaignCount:cache.campaignCount||0,creativeCount:cache.creativeCount||0};
   }
   return {name,status:'已授权',expire:'长期',quota:8000,quotaMax:10000,roi:0,gmv:0,spend:0,ctr:0,cvr:0,health:70,real:true,noData:true};
 }
@@ -527,6 +537,7 @@ const DataAdapter={
   mode:'demo', // 'demo' | 'real'
   currentUserId:null,
   realStores:null, // 真实模式下各店铺指标缓存
+  metricsCache:{}, // 真实API指标缓存: storeName -> {spend,gmv,roi,ctr,cvr,campaignCount,creativeCount,ts}
   apiStatus:{campaigns:'演示数据',reports:'演示数据',keywords:'演示数据',audiences:'演示数据',creatives:'演示数据',sycm:'演示数据'},
   importedData:{}, // key: storeName_dataType -> {rows, headers, importedAt, fileName, dataType, storeName}
   // ---------- 导入数据辅助方法 ----------
@@ -858,23 +869,40 @@ const DataAdapter={
   // 真实模式下按店铺拉取核心指标，供 getStores() 融合
   async refreshRealData(){
     if(this.mode!=='real')return;
-    // 单店隔离模式：仅刷新当前店铺的真实指标（从万相台计划数据汇总）
     const my=getMyStores();
     const name=currentStore();
     const rec=my.find(s=>s.shopName===name);
     if(!rec||!rec.session)return;
     const out=[];
-    const st={name:name,roi:2.5,gmv:0,spend:0,ctr:0,cvr:0,real:true};
+    const st={name:name,roi:0,gmv:0,spend:0,ctr:0,cvr:0,real:true};
+    const cache={spend:0,gmv:0,roi:0,ctr:0,cvr:0,campaignCount:0,creativeCount:0,ts:Date.now()};
     try{
-      const camp=await this.fetchCampaigns();
-      if(camp&&camp.live&&camp.real&&Array.isArray(camp.data)){
-        let budget=0;
-        camp.data.forEach(c=>{budget+=parseFloat(c['日预算']||0)||0;});
-        if(budget>0){st.spend=Math.round(budget);st.gmv=Math.round(budget*2.5);}
+      // 1. 真实报表（花费汇总，近7天）
+      const rep=await this.fetchReports();
+      if(rep&&rep.live&&rep.summary){
+        st.spend=rep.summary.spend||0;st.gmv=rep.summary.gmv||0;st.roi=rep.summary.roi||0;st.ctr=rep.summary.ctr||0;
+        cache.spend=st.spend;cache.gmv=st.gmv;cache.roi=st.roi;cache.ctr=st.ctr;
       }
     }catch(e){}
+    try{
+      // 2. 真实计划数
+      const camp=await this.fetchCampaigns();
+      if(camp&&camp.live&&Array.isArray(camp.data)){
+        cache.campaignCount=camp.data.length;
+      }
+    }catch(e){}
+    try{
+      // 3. 真实创意数
+      const cr=await this.fetchCreatives();
+      if(cr&&cr.live&&Array.isArray(cr.data)){
+        cache.creativeCount=cr.data.length;
+      }
+    }catch(e){}
+    this.metricsCache[name]=cache;
     out.push(st);
     this.realStores=out;
+    // 数据到位后刷新总览与状态栏
+    try{renderOverview();if(typeof AuthUI!=='undefined'){AuthUI.renderTopbar();AuthUI.renderStatusPill();}}catch(e){}
   }
 };
 
@@ -1220,23 +1248,33 @@ function s2Render(){
   const metrics=buildStoreMetrics(name);
   const types=[['campaign_report','万相台-计划报表'],['keyword_report','万相台-关键词报表'],['audience_report','万相台-人群报表'],['creative_report','万相台-创意报表'],['sycm_overview','生意参谋-店铺概况'],['sycm_product','生意参谋-商品分析']];
   const dataRows=types.map(([k,label])=>{const d=DataAdapter.getImportedData(name,k);return `<tr><td class="text-sm">${label}</td><td>${d&&d.rows&&d.rows.length?`<span class="badge badge-green">已导入 ${d.rowCount}行</span>`:'<span class="badge badge-gray">未导入</span>'}</td></tr>`;}).join('');
+  const dataStateHtml=metrics.apiReal
+    ?`<span class="badge badge-green">万相台API实时数据</span> <span class="text-xs text-gray">（${metrics.campaignCount||0}个计划 / ${metrics.creativeCount||0}个创意）</span>`
+    :metrics.imported?'<span class="badge badge-green">已导入真实数据</span>':'<span class="badge badge-gray">未导入数据（指标显示为占位）</span>';
   document.getElementById('s2Info').innerHTML=`
   <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.roi||'-'}</div><div class="text-xs text-gray">ROI</div></div>
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.spend||0}</div><div class="text-xs text-gray">总花费(元)</div></div>
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.gmv||0}</div><div class="text-xs text-gray">总GMV(元)</div></div>
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.ctr||0}%</div><div class="text-xs text-gray">CTR</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.spend>0?metrics.spend:'-'}</div><div class="text-xs text-gray">总花费(元)·近7天</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.gmv>0?metrics.gmv:'-'}</div><div class="text-xs text-gray">总GMV(元)</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.roi>0?metrics.roi:'-'}</div><div class="text-xs text-gray">ROI</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.ctr>0?metrics.ctr+'%':'-'}</div><div class="text-xs text-gray">CTR</div></div>
   </div>
   <div class="result-box mt-3"><h4 class="mb-2">基础信息</h4>
     <table class="data-table"><tbody>
       <tr><td>店铺名称</td><td>${name||'-'}</td></tr>
       <tr><td>经营模式</td><td>天猫${isDemoMode()?'（演示）':''}店铺</td></tr>
       <tr><td>绑定投放渠道</td><td>直通车 / 引力魔方 / 万相台无界版</td></tr>
-      <tr><td>数据状态</td><td>${metrics.noData?'<span class="badge badge-gray">未导入数据（指标显示为占位）</span>':'<span class="badge badge-green">已导入真实数据</span>'}</td></tr>
-    </tbody></table></div>
+      <tr><td>数据状态</td><td>${dataStateHtml}</td></tr>
+      <tr><td>计划数 / 创意数</td><td>${metrics.campaignCount||'-'} / ${metrics.creativeCount||'-'}</td></tr>
+    </tbody></table>
+    ${metrics.apiReal?'<p class="text-xs text-gray mt-2"><i class="fa-solid fa-circle-info"></i> 花费为万相台API实时数据；GMV/ROI/CTR等指标需补申请报表字段权限或Excel导入后显示</p>':''}
+  </div>
   <div class="result-box mt-3"><h4 class="mb-2">数据导入状态</h4>
     <table class="data-table"><tbody>${dataRows}</tbody></table>
-    <button class="btn btn-primary btn-sm mt-3" onclick="DataImport.open()"><i class="fa-solid fa-file-import"></i> 去导入数据</button></div>`;
+    <button class="btn btn-primary btn-sm mt-3" onclick="DataImport.openModal()"><i class="fa-solid fa-file-import"></i> 去导入数据</button></div>`;
+  // 真实模式且暂无缓存时，异步拉取真实指标后自动刷新本面板
+  if(DataAdapter.mode==='real'&&!metrics.apiReal&&!metrics.imported){
+    DataAdapter.refreshRealData().then(()=>{try{s2Render();}catch(e){}}).catch(()=>{});
+  }
 }
 function s2Select(si){const data=LS.get('mapping',[]);const s=data[si];document.getElementById('s2Detail').innerHTML=`<h4>${s.name}</h4><p class="text-sm mt-2">账户数：${s.accounts.length}</p><p class="text-sm">渠道总数：${s.accounts.reduce((t,a)=>t+a.channels.length,0)}</p><button class="btn btn-primary btn-sm mt-3" onclick="s2AddAcc(${si})">+ 添加账户</button>`;}
 function s2SelectAcc(si,ai){const data=LS.get('mapping',[]);const a=data[si].accounts[ai];document.getElementById('s2Detail').innerHTML=`<h4>${a.name}</h4><p class="text-sm mt-2">所属店铺：${data[si].name}</p><p class="text-sm">渠道：${a.channels.join('、')}</p><button class="btn btn-primary btn-sm mt-3" onclick="s2AddCh(${si},${ai})">+ 添加渠道</button>`;}
@@ -2637,7 +2675,7 @@ const AuthUI={
         DataAdapter.mode='real';
         DataAdapter.apiStatus.campaigns='已连接(万相台)';
         if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-green"><i class="fa-solid fa-circle-check"></i> Session验证通过，店铺「'+shopName+'」已添加，正在切换...</p></div>';
-        setTimeout(()=>{closeModal();rerenderAll();toast('已添加店铺：'+shopName+'（真实数据已接入）');},800);
+        setTimeout(()=>{closeModal();rerenderAll();toast('已添加店铺：'+shopName+'（正在拉取真实数据...）');DataAdapter.refreshRealData().catch(()=>{});},800);
       }else{
         if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">Session验证失败：令牌无效或已过期，请重新获取。</p></div>';
         if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
@@ -3094,6 +3132,10 @@ function skillRuleDel(key,id){RuleEngine.saveRules(RuleEngine.getRules().filter(
   renderOverview();
   renderAccordion();
   renderTools();
+  // 真实模式：启动时拉取当前店铺的真实指标（报表/计划/创意），到位后自动刷新总览
+  if(typeof DataAdapter!=='undefined'&&DataAdapter.mode==='real'){
+    DataAdapter.refreshRealData().catch(()=>{});
+  }
 })();
 </script>
 </body>
