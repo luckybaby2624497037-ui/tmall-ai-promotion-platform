@@ -708,18 +708,27 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        const d=await this.proxy('alimama.report.campaign.get',{start_time:startDate||'',end_time:endDate||'',page:1,size:50});
+        // 万相台计划报表（当前应用权限仅开放charge花费字段；点击/展现等指标需补申请权限或Excel导入）
+        const start=(startDate||new Date(Date.now()-7*86400000).toISOString().slice(0,10));
+        const end=(endDate||new Date().toISOString().slice(0,10));
+        const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
+          top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'campaign',query_field_in_list:'charge',offset:0,page_size:50})
+        });
         const err=this.upstreamError(d);
         if(!err&&d.status==='ok'){
-          this.apiStatus.reports='已连接';
-          const rows=this.extractList(d.response).map(r=>({
-            date:r.date||r.log_date||'',store:r.campaign_name||r.store||'',
-            cost:+(r.cost||r.charge||0),gmv:+(r.gmv||r.pay||0),
-            roi:+(r.roi||0),ctr:+(r.ctr||0),cvr:+(r.cvr||0),
-            clicks:+(r.click||r.clicks||0),impressions:+(r.impression||r.impressions||0)
-          }));
-          if(!rows.length)return {live:true,rows:[],summary:this.summarize([])};
-          return {live:true,rows,summary:this.summarize(rows)};
+          this.apiStatus.reports='已连接(花费字段)';
+          const list=this.extractList(d.response);
+          if(list.length){
+            const rows=list.map(r=>({
+              date:end,store:currentStore()||'',campaign:r.campaign_name||'',
+              cost:+((r.report_index&&r.report_index.charge)||0),gmv:0,roi:0,ctr:0,cvr:0,clicks:0,impressions:0,
+              item:r.promotion_name||''
+            }));
+            const summary=this.summarize(rows);
+            summary.note='当前应用权限仅含花费(charge)字段；点击/展现/GMV等指标需在淘宝开放平台补申请权限，或用Excel导入补全';
+            return {live:true,rows,summary,real:true};
+          }
+          return {live:true,rows:[],summary:this.summarize([]),real:true};
         }
         this.apiStatus.reports=err||'未授权接口';
       }catch(e){this.apiStatus.reports='连接失败';}
@@ -730,55 +739,16 @@ const DataAdapter={
     const rows=this.seedReports();
     return {live:false,rows,summary:this.summarize(rows)};
   },
-  async fetchKeywords(campaignId,storeName){
-    // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
-    const curStore=storeName||this._currentStoreName();
-    const imported=this.getImportedData(curStore,'keyword_report');
-    if(imported&&imported.rows&&imported.rows.length){
-      this.apiStatus.keywords='导入数据';
-      return {live:true,data:imported.rows,imported:true};
-    }
-    if(this.mode==='real'){
-      try{
-        const d=await this.proxy('alimama.zw.keyword.list',{campaign_id:campaignId||'',page:1,size:100});
-        const err=this.upstreamError(d);
-        if(!err&&d.status==='ok'){
-          this.apiStatus.keywords='已连接';
-          const list=this.extractList(d.response);
-          if(list.length)return {live:true,data:list};
-          return {live:true,data:getKeywords()};
-        }
-        this.apiStatus.keywords=err||'未授权接口';
-      }catch(e){this.apiStatus.keywords='连接失败';}
-      return {live:false,data:getKeywords()};
-    }
-    this.apiStatus.keywords='演示数据';
-    return {live:false,data:getKeywords()};
-  },
-  async fetchAudiences(storeName){
-    // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
-    const curStore=storeName||this._currentStoreName();
-    const imported=this.getImportedData(curStore,'audience_report');
-    if(imported&&imported.rows&&imported.rows.length){
-      this.apiStatus.audiences='导入数据';
-      return {live:true,data:imported.rows,imported:true};
-    }
-    if(this.mode==='real'){
-      try{
-        const d=await this.proxy('alimama.dmp.crowd.list',{page:1,size:50});
-        const err=this.upstreamError(d);
-        if(!err&&d.status==='ok'){
-          this.apiStatus.audiences='已连接';
-          const list=this.extractList(d.response);
-          if(list.length)return {live:true,data:list};
-          return {live:true,data:DEMO_SEED.audiences};
-        }
-        this.apiStatus.audiences=err||'未授权接口';
-      }catch(e){this.apiStatus.audiences='连接失败';}
-      return {live:false,data:DEMO_SEED.audiences};
-    }
-    this.apiStatus.audiences='演示数据';
-    return {live:false,data:DEMO_SEED.audiences};
+  // 万相台真实创意数据 → 统一格式
+  mapCreatives(list){
+    return (list||[]).map(c=>({
+      '创意名称':c.creative_name||('-创意'+(c.creative_id||'')),
+      '创意ID':c.creative_id||'',
+      '所属单元ID':c.adgroup_id||'',
+      '审核状态':(c.audit&&c.audit.status)||'NP',
+      '创建时间':(c.create_time||'').slice(0,10),
+      '格式类型':(c.children&&c.children[0]&&c.children[0].material_list&&c.children[0].material_list.item_material_v_o&&c.children[0].material_list.item_material_v_o[0]&&c.children[0].material_list.item_material_v_o[0].format_type===1)?'图片':'其他'
+    }));
   },
   async fetchCreatives(storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
@@ -790,13 +760,15 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        const d=await this.proxy('alimama.creative.list',{page:1,size:50});
+        const d=await this.proxy('taobao.universalbp.new.creative.manage.findmanagepage',{
+          creative_query_v_o:JSON.stringify({offset:0,page_size:100})
+        });
         const err=this.upstreamError(d);
         if(!err&&d.status==='ok'){
-          this.apiStatus.creatives='已连接';
+          this.apiStatus.creatives='已连接(万相台)';
           const list=this.extractList(d.response);
-          if(list.length)return {live:true,data:list};
-          return {live:true,data:DEMO_SEED.creatives};
+          if(list.length)return {live:true,data:this.mapCreatives(list),real:true};
+          return {live:true,data:[],real:true};
         }
         this.apiStatus.creatives=err||'未授权接口';
       }catch(e){this.apiStatus.creatives='连接失败';}
@@ -804,6 +776,60 @@ const DataAdapter={
     }
     this.apiStatus.creatives='演示数据';
     return {live:false,data:DEMO_SEED.creatives};
+  },
+  // 万相台真实人群绑定数据 → 统一格式（按计划遍历）
+  async fetchAudiences(storeName){
+    const curStore=storeName||this._currentStoreName();
+    const imported=this.getImportedData(curStore,'audience_report');
+    if(imported&&imported.rows&&imported.rows.length){
+      this.apiStatus.audiences='导入数据';
+      return {live:true,data:imported.rows,imported:true};
+    }
+    if(this.mode==='real'){
+      try{
+        // 先拿计划列表，再逐计划查人群绑定
+        const camp=await this.fetchCampaigns(curStore);
+        if(camp&&camp.live&&Array.isArray(camp.data)&&camp.data.length){
+          const rows=[];
+          for(const c of camp.data.slice(0,10)){
+            try{
+              const d=await this.proxy('taobao.universalbp.new.crowd.findlist',{
+                crowd_bind_query_list_v_o:JSON.stringify({crowd_bind_query_list:[{campaign_id:c['计划ID']}]})
+              });
+              if(d&&d.status==='ok'){
+                const binds=this.extractList(d.response);
+                binds.forEach(b=>{
+                  const crowds=(b.crowd_list&&b.crowd_list.crowd_bind_result_v_o)||[];
+                  crowds.forEach(cr=>{
+                    rows.push({'人群名称':cr.crowd_name||cr.crowd_id||'人群','计划名称':c['计划名称'],'状态':'绑定中'});
+                  });
+                });
+              }
+            }catch(e){}
+          }
+          this.apiStatus.audiences=rows.length?'已连接(万相台)':'已连接(无绑定人群)';
+          if(rows.length)return {live:true,data:rows,real:true};
+          return {live:true,data:[],real:true};
+        }
+        this.apiStatus.audiences='已连接(无计划)';
+        return {live:true,data:[],real:true};
+      }catch(e){this.apiStatus.audiences='连接失败';}
+      return {live:false,data:DEMO_SEED.audiences};
+    }
+    this.apiStatus.audiences='演示数据';
+    return {live:false,data:DEMO_SEED.audiences};
+  },
+  async fetchKeywords(campaignId,storeName){
+    // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
+    const curStore=storeName||this._currentStoreName();
+    const imported=this.getImportedData(curStore,'keyword_report');
+    if(imported&&imported.rows&&imported.rows.length){
+      this.apiStatus.keywords='导入数据';
+      return {live:true,data:imported.rows,imported:true};
+    }
+    // 万相台bidword接口当前返回系统异常（应用权限待开通），关键词数据暂走Excel导入
+    this.apiStatus.keywords='需Excel导入(接口权限待开通)';
+    return {live:false,data:getKeywords()};
   },
   async fetchSycmData(storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
