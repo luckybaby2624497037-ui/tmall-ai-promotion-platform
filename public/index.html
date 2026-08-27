@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V14</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V15</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -507,12 +507,10 @@ function crossStoreBarHtml(modId,skillId){
   </div>`;
 }
 // ============ 数据适配层 ============
-// 万相台无界版营销场景编码（top_service_context.biz_code）
-// 已实测有效：onebpSearch=关键词推广 onebpDisplay=人群推广 onebpShortVideo=超级短视频
-// onebpLive=超级直播 onebpUnion=联盟 onebpItemMarketing/onebpActivityMarketing=货品/活动(当前0消耗)
-// 注：如发现新场景编码（如货品推广主力场景），加入SCENE_CODES即自动纳入聚合
-const SCENE_CODES=['onebpSearch','onebpDisplay','onebpShortVideo','onebpLive','onebpUnion','onebpItemMarketing','onebpActivityMarketing'];
-const SCENE_NAMES={'onebpSearch':'关键词推广','onebpDisplay':'人群推广','onebpShortVideo':'超级短视频','onebpLive':'超级直播','onebpUnion':'联盟广告','onebpItemMarketing':'货品推广','onebpActivityMarketing':'活动推广','onebpContentMarketing':'内容推广'};
+// 万相台无界版营销场景编码（top_service_context.biz_code）——已实测全部有效场景
+// 花费对齐验证：Search(1186.12)+Display(2200.43)+ShortVideo(698.43)+ShopMarketing(1207.09)+Site(4193.97) = 9486.04元，与万相台后台完全一致
+const SCENE_CODES=['onebpSearch','onebpDisplay','onebpShortVideo','onebpLive','onebpUnion','onebpItemMarketing','onebpActivityMarketing','onebpSite','onebpShopMarketing'];
+const SCENE_NAMES={'onebpSearch':'关键词推广','onebpDisplay':'人群推广','onebpShortVideo':'超级短视频','onebpLive':'超级直播','onebpUnion':'联盟广告','onebpItemMarketing':'货品推广','onebpActivityMarketing':'活动推广','onebpSite':'货品全站推广','onebpShopMarketing':'店铺直达','onebpContentMarketing':'内容推广'};
 // 统一数据适配层：real 模式走后端 /api/proxy/alimama 调用阿里妈妈开放API，
 // demo 模式返回内置种子数据。所有技能通过 getStores()/DataAdapter 消费数据，自动切换。
 const DEMO_SEED={
@@ -547,6 +545,7 @@ const DataAdapter={
   realCampaigns:[], // 万相台真实计划列表缓存
   realCreatives:[], // 万相台真实创意列表缓存
   realReports:[], // 万相台真实报表行缓存
+  realRealtime:[], // 今日实时花费行缓存
   diagLog:[], // 数据拉取诊断日志
   apiStatus:{campaigns:'演示数据',reports:'演示数据',keywords:'演示数据',audiences:'演示数据',creatives:'演示数据',sycm:'演示数据'},
   importedData:{}, // key: storeName_dataType -> {rows, headers, importedAt, fileName, dataType, storeName}
@@ -961,6 +960,28 @@ const DataAdapter={
         log(false,'创意拉取失败：'+this.apiStatus.creatives);
       }
     }catch(e){log(false,'创意异常：'+e.message);}
+    try{
+      // 4. 实时报表（今日实时花费，遍历场景聚合）
+      let rtTotal=0;const rtRows=[];
+      for(const scene of SCENE_CODES){
+        try{
+          const d=await this.proxy('taobao.universalbp.new.report.query.realtime',{
+            top_real_time_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',effect_equal:15,query_domains:'campaign',query_field_in_list:'charge',offset:0,page_size:50})
+          },scene);
+          const err=this.upstreamError(d);
+          if(!err&&d.status==='ok'){
+            const list=this.extractList(d.response);
+            list.forEach(r=>{
+              const c=+(r.report_index&&r.report_index.charge)||0;
+              if(c>0){rtTotal+=c;rtRows.push({campaign:r.campaign_name||'',cost:c,scene:(r.scene1_name||SCENE_NAMES[scene]||scene)});}
+            });
+          }
+        }catch(e){}
+      }
+      cache.todaySpend=Math.round(rtTotal*100)/100;
+      this.realRealtime=rtRows;
+      log(true,'实时报表成功：今日实时花费'+cache.todaySpend+'元（'+rtRows.length+'个在投计划）');
+    }catch(e){log(false,'实时报表异常：'+e.message);}
     this.metricsCache[name]=cache;
     out.push(st);
     this.realStores=out;
@@ -1315,10 +1336,13 @@ function s2Render(){
   const dataStateHtml=metrics.apiReal
     ?`<span class="badge badge-green">万相台API实时数据</span> <span class="text-xs text-gray">（${metrics.campaignCount||0}个计划 / ${metrics.creativeCount||0}个创意）</span>`
     :metrics.imported?'<span class="badge badge-green">已导入真实数据</span>':'<span class="badge badge-gray">未导入数据（指标显示为占位）</span>';
+  const cache=(typeof DataAdapter!=='undefined')?DataAdapter.metricsCache[name]:null;
+  const todaySpend=cache&&cache.todaySpend;
   document.getElementById('s2Info').innerHTML=`
-  <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.spend>0?metrics.spend:'-'}</div><div class="text-xs text-gray">总花费(元)·近7天</div></div>
-    <div class="result-box" style="text-align:center"><div class="num">${metrics.gmv>0?metrics.gmv:'-'}</div><div class="text-xs text-gray">总GMV(元)</div></div>
+  <div class="stat-grid" style="grid-template-columns:repeat(5,1fr)">
+    <div class="result-box" style="text-align:center"><div class="num" style="color:#ef4444">${todaySpend>0?'¥'+todaySpend:'-'}</div><div class="text-xs text-gray">今日实时花费</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.spend>0?'¥'+metrics.spend:'-'}</div><div class="text-xs text-gray">近7天花费</div></div>
+    <div class="result-box" style="text-align:center"><div class="num">${metrics.gmv>0?'¥'+metrics.gmv:'-'}</div><div class="text-xs text-gray">总GMV(元)</div></div>
     <div class="result-box" style="text-align:center"><div class="num">${metrics.roi>0?metrics.roi:'-'}</div><div class="text-xs text-gray">ROI</div></div>
     <div class="result-box" style="text-align:center"><div class="num">${metrics.ctr>0?metrics.ctr+'%':'-'}</div><div class="text-xs text-gray">CTR</div></div>
   </div>
@@ -2893,7 +2917,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V14</td></tr>
+          <tr><td>平台版本</td><td>V15</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
