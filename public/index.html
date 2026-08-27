@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V15</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V17</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -546,6 +546,7 @@ const DataAdapter={
   realCreatives:[], // 万相台真实创意列表缓存
   realReports:[], // 万相台真实报表行缓存
   realRealtime:[], // 今日实时花费行缓存
+  realAdgroups:[], // 万相台真实推广单元缓存
   diagLog:[], // 数据拉取诊断日志
   apiStatus:{campaigns:'演示数据',reports:'演示数据',keywords:'演示数据',audiences:'演示数据',creatives:'演示数据',sycm:'演示数据'},
   importedData:{}, // key: storeName_dataType -> {rows, headers, importedAt, fileName, dataType, storeName}
@@ -991,6 +992,26 @@ const DataAdapter={
       this.realRealtime=rtRows;
       log(true,'实时报表成功：今日实时花费'+cache.todaySpend+'元（'+rtRows.length+'个在投计划）');
     }catch(e){log(false,'实时报表异常：'+e.message);}
+    try{
+      // 5. 推广单元数据（含商品信息与成交增长数据）
+      const agRows=[];
+      for(const c of (this.realCampaigns||[]).slice(0,10)){
+        try{
+          const d=await this.proxy('taobao.universalbp.new.adgroup.horizontal.findpage',{
+            adgroup_query_v_o:JSON.stringify({campaign_id_list:[c['计划ID']],offset:0,page_size:20})
+          },'onebpSearch');
+          const err=this.upstreamError(d);
+          if(!err&&d.status==='ok'){
+            const list=this.extractList(d.response);
+            list.forEach(a=>{
+              if(a.adgroup_name)agRows.push({'单元名称':a.adgroup_name,'计划名称':a.campaign_name||c['计划名称'],'状态':a.display_status||'','商品':(a.material&&(a.material.title||a.material.item_name))||(a.adgroup_name||''),'增长数据':(a.material&&a.material.grow_desc)||''});
+            });
+          }
+        }catch(e){}
+      }
+      this.realAdgroups=agRows;
+      if(agRows.length)log(true,'推广单元拉取成功：'+agRows.length+'个单元');
+    }catch(e){log(false,'推广单元异常：'+e.message);}
     this.metricsCache[name]=cache;
     out.push(st);
     this.realStores=out;
@@ -1546,7 +1567,7 @@ function s12Render(){
       return {name:c['计划名称'],id:c['计划ID'],on:!off&&c['状态'].indexOf('停')<0,
         roi:0,spend:Math.round(repMap[c['计划名称']]||0),budget:c['日预算'],statusTxt:c['状态'],real:true,scene:c['场景']||c['投放渠道']||''};
     });
-    document.getElementById('s12Plans').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实数据：${plans.length}个计划（已聚合全部营销场景；花费为近7天真实数据，GMV/ROI需补申请报表权限后显示）</p><table class="data-table"><thead><tr><th>计划名</th><th>场景</th><th>状态</th><th>日预算</th><th>近7天花费</th><th>开关</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td><span class="badge badge-blue">${p.scene||p.channel||'-'}</span></td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td><td>¥${p.budget}</td><td>¥${p.spend}</td><td><div class="toggle ${p.on?'on':''}" onclick="s12RealToggle('${p.name.replace(/'/g,"\\'")}',this)"></div></td></tr>`).join('')}</tbody></table>`;
+    document.getElementById('s12Plans').innerHTML=`<div class="result-box mb-2" style="border-left:4px solid ${LS.get('writeback_'+(currentStore()||'demo'),false)?'#10b981':'#e2e8f0'}"><div class="flex justify-between items-center flex-wrap gap-2"><div><div class="flex items-center gap-2"><div class="toggle ${LS.get('writeback_'+(currentStore()||'demo'),false)?'on':''}" onclick="toggleWriteback(this)"></div><span class="text-sm font-bold">真实写回万相台</span>${LS.get('writeback_'+(currentStore()||'demo'),false)?'<span class="badge badge-green">已开启：预算修改将真实生效</span>':'<span class="badge badge-yellow">未开启：操作仅本地记录</span>'}</div><p class="text-xs text-gray mt-1">开启后，预算修改与规则引擎的预算调整会通过API真实写入万相台后台（接口：campaign.budget.batchupdate，已验证可用）</p></div></div></div><p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实数据：${plans.length}个计划（已聚合全部营销场景；花费为近7天真实数据，GMV/ROI需补申请报表权限后显示）</p><table class="data-table"><thead><tr><th>计划名</th><th>场景</th><th>状态</th><th>日预算</th><th>近7天花费</th><th>预算调整</th><th>开关</th></tr></thead><tbody>${plans.map((p,i)=>`<tr><td>${p.name}</td><td><span class="badge badge-blue">${p.scene||p.channel||'-'}</span></td><td><span class="badge ${p.on?'badge-green':'badge-gray'}">${p.on?'投放中':'已暂停'}</span></td><td id="s12bud_${i}">¥${p.budget}</td><td>¥${p.spend}</td><td><input type="number" placeholder="${p.budget}" step="50" style="width:80px;padding:4px;border:1px solid var(--c-border);border-radius:4px" onkeydown="if(event.key==='Enter')s12SetBudget(${p.id},this.value,'${p.name.replace(/'/g,"\\'")}')"></td><td><div class="toggle ${p.on?'on':''}" onclick="s12RealToggle('${p.name.replace(/'/g,"\\'")}',this)"></div></td></tr>`).join('')}</tbody></table><p class="text-xs text-gray mt-2">预算调整：输入新预算金额后按回车即提交（写回需开启上方开关）</p>`;
     return;
   }
   const plans=LS.get('s12plans_'+store.name,[{name:'爆款引流-计划A',on:true,roi:3.5,spend:1200},{name:'品牌词-计划B',on:true,roi:1.8,spend:800},{name:'竞品拦截-计划C',on:false,roi:0.9,spend:300},{name:'长尾词-计划D',on:true,roi:2.2,spend:500}]);
@@ -1558,7 +1579,46 @@ function s12RealToggle(name,el){
   const toggles=LS.get(key,{});
   toggles[name]=el.classList.contains('on');
   LS.set(key,toggles);
-  toast('「'+name+'」开关已变更（本地生效，写入万相台需开通写权限）');
+  toast('「'+name+'」开关已变更（本地生效）');
+}
+// ---------- 真实写回万相台（预算） ----------
+function toggleWriteback(el){
+  const key='writeback_'+(currentStore()||'demo');
+  const cur=LS.get(key,false);
+  if(!cur&&!confirm('开启后，本平台的预算修改将真实写入万相台后台（影响真实广告投放资金）。确认开启？')){return;}
+  LS.set(key,!cur);
+  toast(!cur?'真实写回已开启：预算修改将真实生效':'真实写回已关闭：操作仅本地记录');
+  s12Render();
+}
+async function tmallUpdateBudget(campaignId,newBudget,campaignName){
+  try{
+    const d=await DataAdapter.proxy('taobao.universalbp.new.campaign.budget.batchupdate',{
+      campaign_budget_list_v_o:JSON.stringify({budget_list:[{campaign_id:campaignId,day_budget:newBudget,dmc_type:'normal'}]})
+    });
+    const s=JSON.stringify(d);
+    if(s.indexOf('budget_batchupdate_response')>=0&&s.indexOf('"ok":true')>=0){
+      toast('✅ 「'+campaignName+'」预算已真实调整为¥'+newBudget);
+      return true;
+    }
+    const msg=(s.match(/"message":"([^"]+)"/)||[])[1]||'未知错误';
+    toast('❌ 写回失败：'+msg);
+    return false;
+  }catch(e){
+    toast('❌ 写回异常：'+e.message);
+    return false;
+  }
+}
+async function s12SetBudget(campaignId,val,campaignName){
+  const newBudget=parseInt(val);
+  if(!newBudget||newBudget<30){toast('预算最低30元');return;}
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  if(!wb){
+    toast('仅本地记录（真实写回未开启）：「'+campaignName+'」预算¥'+newBudget);
+    return;
+  }
+  toast('正在写回万相台...');
+  const ok=await tmallUpdateBudget(campaignId,newBudget,campaignName);
+  if(ok){DataAdapter.refreshRealData().catch(()=>{});}
 }
 function s12Toggle(i){const store=getStores()[document.getElementById('s12Store').selectedIndex];const plans=LS.get('s12plans_'+store.name,[]);plans[i].on=!plans[i].on;LS.set('s12plans_'+store.name,plans);s12Render();}
 function s12Eval(){
@@ -2937,7 +2997,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V15</td></tr>
+          <tr><td>平台版本</td><td>V17</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
