@@ -915,6 +915,11 @@ const DataAdapter={
   // 真实模式下按店铺拉取核心指标，供 getStores() 融合
   async refreshRealData(){
     if(this.mode!=='real')return;
+    if(this._refreshing)return; // 防重入
+    this._refreshing=true;
+    try{await this._doRefreshRealData();}finally{this._refreshing=false;}
+  },
+  async _doRefreshRealData(){
     const my=getMyStores();
     const name=currentStore();
     const rec=my.find(s=>s.shopName===name);
@@ -926,6 +931,10 @@ const DataAdapter={
     const st={name:name,roi:0,gmv:0,spend:0,ctr:0,cvr:0,real:true};
     const cache={spend:0,gmv:0,roi:0,ctr:0,cvr:0,campaignCount:0,creativeCount:0,ts:Date.now()};
     this.realCampaigns=[];this.realCreatives=[];this.realReports=[];
+    // 淘宝侧服务波动检测：全部拉取为0时定时自动重试（hsf异常/限流自愈后自动恢复数据）
+    const gotAnyData=()=>{
+      return (this.realCampaigns&&this.realCampaigns.length)||(this.realReports&&this.realReports.length)||(cache.todaySpend>0);
+    };
     try{
       // 1. 真实报表（花费汇总，近7天）
       const rep=await this.fetchReports();
@@ -986,6 +995,17 @@ const DataAdapter={
     out.push(st);
     this.realStores=out;
     log(true,'拉取流程完成，缓存已更新');
+    // 淘宝服务波动自愈：拉取结果全为0时，每5分钟自动重试（最多10次），服务恢复后数据自动补齐
+    if(!gotAnyData()){
+      log(false,'⚠ 拉取结果为空——淘宝万相台服务可能波动(hsf异常)或限流，已启动自动重试');
+      if(this._retryTimer)clearInterval(this._retryTimer);
+      let retries=0;
+      this._retryTimer=setInterval(()=>{
+        retries++;
+        if(retries>10||gotAnyData()||this.mode!=='real'){clearInterval(this._retryTimer);this._retryTimer=null;return;}
+        this.refreshRealData().catch(()=>{});
+      },5*60*1000);
+    }
     // 数据到位后刷新总览与状态栏
     try{renderOverview();if(typeof AuthUI!=='undefined'){AuthUI.renderTopbar();AuthUI.renderStatusPill();}}catch(e){}
   }
