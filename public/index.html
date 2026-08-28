@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V19</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V20</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -547,6 +547,8 @@ const DataAdapter={
   realReports:[], // 万相台真实报表行缓存
   realRealtime:[], // 今日实时花费行缓存
   realAdgroups:[], // 万相台真实推广单元缓存
+  realKeywords:[], // 万相台真实关键词缓存（词+出价+效果+排名）
+  _adgroupIds:[], // 推广单元ID列表（供bidword查询）
   diagLog:[], // 数据拉取诊断日志
   apiStatus:{campaigns:'演示数据',reports:'演示数据',keywords:'演示数据',audiences:'演示数据',creatives:'演示数据',sycm:'演示数据'},
   importedData:{}, // key: storeName_dataType -> {rows, headers, importedAt, fileName, dataType, storeName}
@@ -885,6 +887,23 @@ const DataAdapter={
     this.apiStatus.audiences='演示数据';
     return {live:false,data:DEMO_SEED.audiences};
   },
+  // 万相台关键词数据 → 统一格式（findlist+rpt_query一次拿词+出价+效果+排名）
+  mapKeywords(rawList){
+    return (rawList||[]).map(w=>{
+      let ri={};try{ri=typeof w.report_info_map==='string'?JSON.parse(w.report_info_map):(w.report_info_map||{});}catch(e){}
+      return {
+        '关键词':w.word||ri.originalWord||'-',
+        'bidword_id':w.bidword_id||'',
+        'campaign_id':w.campaign_id||'',
+        'adgroup_id':w.adgroup_id||'',
+        '出价':+(w.bid_price||0),
+        '状态':w.status==='launch'?'投放中':(w.status||''),
+        '展现':+(ri.adPv||0),'点击':+(ri.click||0),'花费':+(ri.charge||0),
+        '排名':ri.hourRankName||(ri.hourRank?('第'+ri.hourRank+'名'):'-'),
+        '匹配':w.match_scope===1?'精准':'短语'
+      };
+    });
+  },
   async fetchKeywords(campaignId,storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
     const curStore=storeName||this._currentStoreName();
@@ -893,8 +912,30 @@ const DataAdapter={
       this.apiStatus.keywords='导入数据';
       return {live:true,data:imported.rows,imported:true};
     }
-    // 万相台bidword接口当前返回系统异常（应用权限待开通），关键词数据暂走Excel导入
-    this.apiStatus.keywords='需Excel导入(接口权限待开通)';
+    if(this.mode==='real'){
+      try{
+        // 关键：campaign_id_list/adgroup_id_list 必须是数组（单数字符串会触发"系统异常"）
+        const camps=(this.realCampaigns||[]).filter(c=>c['计划ID']);
+        if(!camps.length){this.apiStatus.keywords='已连接(无计划)';return {live:true,data:[],real:true};}
+        const cidList=camps.map(c=>parseInt(c['计划ID'])).filter(x=>x);
+        const agList=(this._adgroupIds&&this._adgroupIds.length)?[...new Set(this._adgroupIds.map(x=>parseInt(x)).filter(x=>x))]:[];
+        const start=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+        const end=new Date().toISOString().slice(0,10);
+        const q={campaign_id_list:cidList,offset:0,page_size:100,rpt_query:{fields:'adPv,click,charge',condition_list:[{start_time:start,end_time:end,is_rt:false,unify_type:'zhai'}]}};
+        if(agList.length)q.adgroup_id_list=agList;
+        const d=await this.proxy('taobao.universalbp.new.bidword.findlist',{word_query_v_o:JSON.stringify(q)});
+        const err=this.upstreamError(d);
+        if(!err&&d.status==='ok'){
+          const list=this.extractList(d.response);
+          this.realKeywords=this.mapKeywords(list);
+          this.apiStatus.keywords='已连接(万相台·'+this.realKeywords.length+'词)';
+          return {live:true,data:this.realKeywords,real:true};
+        }
+        this.apiStatus.keywords=err||'未授权接口';
+      }catch(e){this.apiStatus.keywords='连接失败';}
+      return {live:false,data:getKeywords()};
+    }
+    this.apiStatus.keywords='演示数据';
     return {live:false,data:getKeywords()};
   },
   async fetchSycmData(storeName){
@@ -1008,8 +1049,8 @@ const DataAdapter={
       log(true,'实时报表成功：今日实时花费'+cache.todaySpend+'元 / GMV '+cache.todayGmv+'元（'+rtRows.length+'个在投计划）');
     }catch(e){log(false,'实时报表异常：'+e.message);}
     try{
-      // 5. 推广单元数据（含商品信息与成交增长数据）
-      const agRows=[];
+      // 5. 推广单元数据（含商品信息与成交增长数据）+ 收集单元ID供bidword查询
+      const agRows=[];const agIds=[];
       for(const c of (this.realCampaigns||[]).slice(0,10)){
         try{
           const d=await this.proxy('taobao.universalbp.new.adgroup.horizontal.findpage',{
@@ -1019,14 +1060,23 @@ const DataAdapter={
           if(!err&&d.status==='ok'){
             const list=this.extractList(d.response);
             list.forEach(a=>{
+              if(a.adgroup_id)agIds.push(a.adgroup_id);
               if(a.adgroup_name)agRows.push({'单元名称':a.adgroup_name,'计划名称':a.campaign_name||c['计划名称'],'状态':a.display_status||'','商品':(a.material&&(a.material.title||a.material.item_name))||(a.adgroup_name||''),'增长数据':(a.material&&a.material.grow_desc)||''});
             });
           }
         }catch(e){}
       }
-      this.realAdgroups=agRows;
+      this.realAdgroups=agRows;this._adgroupIds=agIds;
       if(agRows.length)log(true,'推广单元拉取成功：'+agRows.length+'个单元');
     }catch(e){log(false,'推广单元异常：'+e.message);}
+    try{
+      // 6. 真实关键词数据（bidword.findlist + rpt_query，词+出价+效果+排名）
+      const kw=await this.fetchKeywords();
+      if(kw&&kw.live&&Array.isArray(kw.data)){
+        cache.keywordCount=kw.data.length;
+        log(true,'关键词拉取成功：'+kw.data.length+'个词');
+      }else{log(false,'关键词拉取：'+this.apiStatus.keywords);}
+    }catch(e){log(false,'关键词异常：'+e.message);}
     this.metricsCache[name]=cache;
     out.push(st);
     this.realStores=out;
@@ -1809,7 +1859,40 @@ function renderS21(mod,skill){
   `,mb=>{s21Init();skillRuleRender('s21');});
 }
 function s21Init(){const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);document.getElementById('s21Tabs').innerHTML=stores.map((s,i)=>`<span class="pill ${i===0?'active':''}" onclick="s21Tab(${i})" data-idx="${i}">${s.name.slice(0,8)}</span>`).join('');s21Tab(0);}
-function s21Tab(i){document.querySelectorAll('#s21Tabs .pill').forEach((p,j)=>p.classList.toggle('active',j===i));const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[i];const kws=LS.get('s21_'+store.name,[{word:'补水面膜',bid:2.5,rank:3,qs:8},{word:'美白精华',bid:3.8,rank:1,qs:9},{word:'防晒霜',bid:1.8,rank:5,qs:6},{word:'洁面乳',bid:2.0,rank:4,qs:7}]);document.getElementById('s21Table').innerHTML=`<table class="data-table"><thead><tr><th>关键词</th><th>出价</th><th>排名</th><th>质量分</th><th>建议</th><th>调整</th></tr></thead><tbody>${kws.map((k,ki)=>{const sug=k.qs>=8&&k.rank>2?'加价':k.qs<6?'降价':'维持';return `<tr><td>${k.word}</td><td>¥${k.bid.toFixed(2)}</td><td>第${k.rank}名</td><td>${k.qs}/10</td><td><span class="badge ${sug==='加价'?'badge-green':sug==='降价'?'badge-red':'badge-gray'}">${sug}</span></td><td><button class="btn btn-sm btn-primary" onclick="s21Adj(${i},${ki},1)">+</button> <button class="btn btn-sm btn-secondary" onclick="s21Adj(${i},${ki},-1)">-</button></td></tr>`;}).join('')}</tbody></table>`;}
+function s21Tab(i){
+  document.querySelectorAll('#s21Tabs .pill').forEach((p,j)=>p.classList.toggle('active',j===i));
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  // 真实关键词数据优先
+  if(DataAdapter.mode==='real'&&DataAdapter.realKeywords&&DataAdapter.realKeywords.length){
+    const kws=DataAdapter.realKeywords;
+    document.getElementById('s21Table').innerHTML=`<div class="result-box mb-2" style="border-left:4px solid ${wb?'#10b981':'#e2e8f0'}"><div class="flex items-center gap-2"><div class="toggle ${wb?'on':''}" onclick="toggleWriteback21(this)"></div><span class="text-sm font-bold">真实写回万相台（改价）</span>${wb?'<span class="badge badge-green">已开启：出价修改真实生效</span>':'<span class="badge badge-yellow">未开启：仅本地记录</span>'}</div></div><p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-check text-green"></i> 万相台真实关键词：${kws.length}个（词/出价/展现/点击/花费/排名均为真实数据）</p><table class="data-table"><thead><tr><th>关键词</th><th>匹配</th><th>状态</th><th>当前出价</th><th>展现</th><th>点击</th><th>花费</th><th>排名</th><th>新出价</th></tr></thead><tbody>${kws.map((k,ki)=>`<tr><td>${k['关键词']}</td><td><span class="badge badge-gray">${k['匹配']}</span></td><td><span class="badge ${k['状态']==='投放中'?'badge-green':'badge-gray'}">${k['状态']}</span></td><td>¥${(+k['出价']).toFixed(2)}</td><td>${k['展现']||'-'}</td><td>${k['点击']||'-'}</td><td>${k['花费']?('¥'+k['花费']):'-'}</td><td>${k['排名']||'-'}</td><td><input type="number" step="0.1" placeholder="${k['出价']}" style="width:70px;padding:4px;border:1px solid var(--c-border);border-radius:4px" onkeydown="if(event.key==='Enter')s21SetBid(${ki},this.value)"></td></tr>`).join('')}</tbody></table><p class="text-xs text-gray mt-2">新出价输入后按回车提交（真实写回需开启上方开关）</p>`;
+    return;
+  }
+  const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[i];const kws=LS.get('s21_'+store.name,[{word:'补水面膜',bid:2.5,rank:3,qs:8},{word:'美白精华',bid:3.8,rank:1,qs:9},{word:'防晒霜',bid:1.8,rank:5,qs:6},{word:'洁面乳',bid:2.0,rank:4,qs:7}]);document.getElementById('s21Table').innerHTML=`<p class="text-xs text-gray mb-2"><i class="fa-solid fa-circle-info"></i> 演示数据（授权店铺后显示真实关键词）</p><table class="data-table"><thead><tr><th>关键词</th><th>出价</th><th>排名</th><th>质量分</th><th>建议</th><th>调整</th></tr></thead><tbody>${kws.map((k,ki)=>{const sug=k.qs>=8&&k.rank>2?'加价':k.qs<6?'降价':'维持';return `<tr><td>${k.word}</td><td>¥${k.bid.toFixed(2)}</td><td>第${k.rank}名</td><td>${k.qs}/10</td><td><span class="badge ${sug==='加价'?'badge-green':sug==='降价'?'badge-red':'badge-gray'}">${sug}</span></td><td><button class="btn btn-sm btn-primary" onclick="s21Adj(${i},${ki},1)">+</button> <button class="btn btn-sm btn-secondary" onclick="s21Adj(${i},${ki},-1)">-</button></td></tr>`;}).join('')}</tbody></table>`;
+}
+function toggleWriteback21(el){const key='writeback_'+(currentStore()||'demo');const cur=LS.get(key,false);if(!cur&&!confirm('开启后关键词出价修改将真实写入万相台。确认开启？')){return;}LS.set(key,!cur);toast(!cur?'真实写回已开启':'真实写回已关闭');s21Tab(0);}
+// 真实写回关键词出价（bidword.update，bidword_list必须数组）
+async function tmallUpdateBidword(kw,newBid){
+  try{
+    const d=await DataAdapter.proxy('taobao.universalbp.new.bidword.update',{
+      word_update_request_v_o:JSON.stringify({bidword_list:[{bidword_id:kw.bidword_id,campaign_id:kw.campaign_id,adgroup_id:kw.adgroup_id,word:kw['关键词'],bid_price:String(newBid)}]})
+    });
+    const s=JSON.stringify(d);
+    if(s.indexOf('bidword_update_response')>=0&&(s.indexOf('"ok":true')>=0||s.indexOf('"error_count":0')>=0))return true;
+    const msg=(s.match(/"message":"([^"]+)"/)||[])[1]||(s.match(/"msg":"([^"]+)"/)||[])[1]||'未知错误';
+    toast('❌ 改价写回失败：'+msg);return false;
+  }catch(e){toast('❌ 改价异常：'+e.message);return false;}
+}
+async function s21SetBid(ki,val){
+  const newBid=parseFloat(val);
+  if(!newBid||newBid<0.05){toast('出价最低0.05元');return;}
+  const kw=DataAdapter.realKeywords[ki];if(!kw)return;
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  if(!wb){toast('仅本地记录（真实写回未开启）：「'+kw['关键词']+'」→¥'+newBid);return;}
+  toast('正在写回万相台改价...');
+  const ok=await tmallUpdateBidword(kw,newBid);
+  if(ok){toast('✅ 「'+kw['关键词']+'」出价已真实改为¥'+newBid);DataAdapter.fetchKeywords().then(()=>s21Tab(0)).catch(()=>{});}
+}
 function s21Adj(si,ki,dir){const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[si];const kws=LS.get('s21_'+store.name,[]);kws[ki].bid=Math.max(0.1,kws[ki].bid+dir*0.2);kws[ki].rank=Math.max(1,Math.min(10,kws[ki].rank-dir));LS.set('s21_'+store.name,kws);s21Tab(si);}
 
 // ===== S22: 跨店否词同步 =====
@@ -3044,7 +3127,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V19</td></tr>
+          <tr><td>平台版本</td><td>V20</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
