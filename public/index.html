@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V20</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V21</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="overview">平台总览</div>
     <div class="tab" data-tab="skills">板块与技能</div>
@@ -3127,7 +3127,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V20</td></tr>
+          <tr><td>平台版本</td><td>V21</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -3301,15 +3301,30 @@ const RuleEngine={
 
   // ---- 数据源：当前店铺的计划/关键词 ----
   getTargets(){
-    const imp=DataAdapter.getImportedData(currentStore(),'campaign_report');
-    let campaigns=(imp&&imp.rows&&imp.rows.length)?imp.rows.map(r=>({id:String(r['计划名称']||r['计划']||r.name||'计划'),name:String(r['计划名称']||r['计划']||r.name||'计划'),status:(r['状态']||'投放中').indexOf('停')>=0?'paused':'active',budget:+(r['日预算']||r['预算']||r.budget||800),roi:+(r['ROI']||r.roi||2),cost:+(r['花费']||r.cost||200),gmv:+(r['GMV']||r.gmv||500),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.5),converts:+(r['转化量']||r.converts||10)})):DEMO_SEED.campaigns.map(c=>Object.assign({},c,{id:c.name,ctr:3.5,cvr:1.8,converts:Math.round(c.gmv/260)}));
-    const kimp=DataAdapter.getImportedData(currentStore(),'keyword_report');
-    let keywords=(kimp&&kimp.rows&&kimp.rows.length)?kimp.rows.slice(0,30).map(r=>({id:String(r['关键词']||r.keyword||'词'),name:String(r['关键词']||r.keyword||'词'),status:'active',bid:+(r['平均出价']||r['出价']||r.bid||2.5),rank:+(r['当前排名']||r.rank||5),roi:+(r['ROI']||r.roi||2),cost:+(r['花费']||r.cost||80),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.5),converts:+(r['转化量']||r.converts||2)})):[
-      {id:'精华液 正装',name:'精华液 正装',status:'active',bid:3.2,rank:2,roi:3.8,cost:210,ctr:4.2,cvr:2.6,converts:8},
-      {id:'补水保湿 精华',name:'补水保湿 精华',status:'active',bid:2.8,rank:5,roi:1.6,cost:180,ctr:3.1,cvr:1.1,converts:3},
-      {id:'品牌名 旗舰店',name:'品牌名 旗舰店',status:'active',bid:1.9,rank:1,roi:5.2,cost:90,ctr:6.5,cvr:3.8,converts:6},
-      {id:'早c晚a 精华',name:'早c晚a 精华',status:'active',bid:3.5,rank:8,roi:0.8,cost:260,ctr:2.2,cvr:0.6,converts:1}
-    ];
+    // 真实模式：优先使用万相台真实数据（含写回所需的bidword_id/campaign_id/adgroup_id）
+    const useReal=DataAdapter.mode==='real';
+    let campaigns;
+    if(useReal&&DataAdapter.realCampaigns&&DataAdapter.realCampaigns.length){
+      campaigns=DataAdapter.realCampaigns.map(c=>({id:String(c['计划名称']),name:c['计划名称'],campaign_id:parseInt(c['计划ID']),status:(c['状态']||'').indexOf('停')>=0?'paused':'active',budget:+(c['日预算']||0)||800,roi:0,cost:0,gmv:0,ctr:0,cvr:0,converts:0}));
+      // 合并报表真实花费/ROI
+      const repMap={};(DataAdapter.realReports||[]).forEach(r=>{if(r.campaign)repMap[r.campaign]={cost:r.cost,roi:r.roi,gmv:r.gmv,clicks:r.clicks,imp:r.impressions};});
+      campaigns.forEach(c=>{const rp=repMap[c.name];if(rp){c.cost=rp.cost||0;c.roi=rp.roi||0;c.gmv=rp.gmv||0;}});
+    } else {
+      const imp=DataAdapter.getImportedData(currentStore(),'campaign_report');
+      campaigns=(imp&&imp.rows&&imp.rows.length)?imp.rows.map(r=>({id:String(r['计划名称']||r['计划']||r.name||'计划'),name:String(r['计划名称']||r['计划']||r.name||'计划'),status:(r['状态']||'投放中').indexOf('停')>=0?'paused':'active',budget:+(r['日预算']||r['预算']||r.budget||800),roi:+(r['ROI']||r.roi||2),cost:+(r['花费']||r.cost||200),gmv:+(r['GMV']||r.gmv||500),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.5),converts:+(r['转化量']||r.converts||10)})):DEMO_SEED.campaigns.map(c=>Object.assign({},c,{id:c.name,ctr:3.5,cvr:1.8,converts:Math.round(c.gmv/260)}));
+    }
+    let keywords;
+    if(useReal&&DataAdapter.realKeywords&&DataAdapter.realKeywords.length){
+      keywords=DataAdapter.realKeywords.map(k=>({id:String(k['bidword_id']),name:k['关键词'],bidword_id:k['bidword_id'],campaign_id:k['campaign_id'],adgroup_id:k['adgroup_id'],status:k['状态']==='投放中'?'active':'paused',bid:+k['出价']||0,rank:(typeof k['排名']==='number'?k['排名']:(k['排名']&&k['排名']!=='-'?parseInt(String(k['排名']).replace(/\D/g,''))||5:5)),roi:+k['ROI']||0,cost:+k['花费']||0,ctr:0,cvr:0,converts:+k['点击']||0}));
+    } else {
+      const kimp=DataAdapter.getImportedData(currentStore(),'keyword_report');
+      keywords=(kimp&&kimp.rows&&kimp.rows.length)?kimp.rows.slice(0,30).map(r=>({id:String(r['关键词']||r.keyword||'词'),name:String(r['关键词']||r.keyword||'词'),status:'active',bid:+(r['平均出价']||r['出价']||r.bid||2.5),rank:+(r['当前排名']||r.rank||5),roi:+(r['ROI']||r.roi||2),cost:+(r['花费']||r.cost||80),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.5),converts:+(r['转化量']||r.converts||2)})):[
+        {id:'精华液 正装',name:'精华液 正装',status:'active',bid:3.2,rank:2,roi:3.8,cost:210,ctr:4.2,cvr:2.6,converts:8},
+        {id:'补水保湿 精华',name:'补水保湿 精华',status:'active',bid:2.8,rank:5,roi:1.6,cost:180,ctr:3.1,cvr:1.1,converts:3},
+        {id:'品牌名 旗舰店',name:'品牌名 旗舰店',status:'active',bid:1.9,rank:1,roi:5.2,cost:90,ctr:6.5,cvr:3.8,converts:6},
+        {id:'早c晚a 精华',name:'早c晚a 精华',status:'active',bid:3.5,rank:8,roi:0.8,cost:260,ctr:2.2,cvr:0.6,converts:1}
+      ];
+    }
     const aimp=DataAdapter.getImportedData(currentStore(),'audience_report');
     let audiences=(aimp&&aimp.rows&&aimp.rows.length)?aimp.rows.slice(0,20).map(r=>({id:String(r['人群名称']||r['人群']||'人群'),name:String(r['人群名称']||r['人群']||'人群'),status:'active',roi:+(r['ROI']||r.roi||2.5),cost:+(r['花费']||r.cost||150),ctr:+(r['CTR(%)']||r.ctr||3),cvr:+(r['CVR(%)']||r.cvr||1.8),converts:+(r['转化量']||r.converts||5)})):DEMO_SEED.audiences.map(a=>Object.assign({},a,{id:a.name,status:'active',cost:Math.round(a.coverage/500),ctr:3.2,cvr:1.9,converts:Math.round(a.coverage/8000)}));
     return {campaigns,keywords,audiences};
@@ -3334,7 +3349,7 @@ const RuleEngine={
     }
     return {hit,v};
   },
-  evaluateAll(verbose){
+  async evaluateAll(verbose){
     const rules=this.getRules().filter(r=>r.enabled);
     if(!rules.length){if(verbose)toast('暂无启用的规则');return;}
     const {campaigns,keywords,audiences}=this.getTargets();
@@ -3342,6 +3357,8 @@ const RuleEngine={
     const ov=this.getOverrides();
     const now=Date.now();
     const today=new Date().toDateString();
+    const writeback=LS.get('writeback_'+(currentStore()||'demo'),false)&&DataAdapter.mode==='real';
+    const writes=[]; // 待真实写回的操作队列
     let fired=0;
     rules.forEach(rule=>{
       const list=rule.level==='关键词'?keywords:(rule.level==='人群'?audiences:campaigns);
@@ -3357,16 +3374,18 @@ const RuleEngine={
           const pct=rule.action==='budget_up'?rule.param:-rule.param;
           const dayChg=ov.filter(o=>o.targetId===t.id&&o.field==='budget'&&new Date(o.ts).toDateString()===today).reduce((s,o)=>s+o.pct,0);
           if(Math.abs(dayChg+pct)>rule.capDailyPct){detail.change=`日累计已达上限${rule.capDailyPct}%，跳过`;}
-          else{const old=t.budget;const nv=+(old*(1+pct/100)).toFixed(2);detail={old,newVal:nv,change:`预算 ${old}→${nv}元`};ov.push({targetType:'campaign',targetId:t.id,field:'budget',oldValue:old,newValue:nv,pct,ruleId:rule.id,ts:now});t.budget=nv;}
-        }else if(rule.action==='budget_set'){const old=t.budget;detail={old,newVal:rule.param,change:`预算 ${old}→${rule.param}元`};ov.push({targetType:'campaign',targetId:t.id,field:'budget',oldValue:old,newValue:rule.param,pct:0,ruleId:rule.id,ts:now});t.budget=rule.param;}
+          else{const old=t.budget;const nv=+(old*(1+pct/100)).toFixed(2);detail={old,newVal:nv,change:`预算 ${old}→${nv}元`};ov.push({targetType:'campaign',targetId:t.id,field:'budget',oldValue:old,newValue:nv,pct,ruleId:rule.id,ts:now});t.budget=nv;
+            if(writeback&&t.campaign_id)writes.push({type:'budget',campaign_id:t.campaign_id,newBudget:nv,name:t.name,rule:rule.name});}
+        }else if(rule.action==='budget_set'){const old=t.budget;detail={old,newVal:rule.param,change:`预算 ${old}→${rule.param}元`};ov.push({targetType:'campaign',targetId:t.id,field:'budget',oldValue:old,newValue:rule.param,pct:0,ruleId:rule.id,ts:now});t.budget=rule.param;if(writeback&&t.campaign_id)writes.push({type:'budget',campaign_id:t.campaign_id,newBudget:rule.param,name:t.name,rule:rule.name});}
         else if(rule.action==='bid_up'||rule.action==='bid_down'){
           const pct=rule.action==='bid_up'?rule.param:-rule.param;
           const dayChg=ov.filter(o=>o.targetId===t.id&&o.field==='bid'&&new Date(o.ts).toDateString()===today).reduce((s,o)=>s+o.pct,0);
           if(Math.abs(dayChg+pct)>rule.capDailyPct){detail.change=`日累计已达上限${rule.capDailyPct}%，跳过`;}
-          else{const old=t.bid;const nv=+(old*(1+pct/100)).toFixed(2);detail={old,newVal:nv,change:`出价 ${old}→${nv}元`};ov.push({targetType:'keyword',targetId:t.id,field:'bid',oldValue:old,newValue:nv,pct,ruleId:rule.id,ts:now});t.bid=nv;}
-        }else if(rule.action==='bid_set'){const old=t.bid;detail={old,newVal:rule.param,change:`出价 ${old}→${rule.param}元`};ov.push({targetType:'keyword',targetId:t.id,field:'bid',oldValue:old,newValue:rule.param,pct:0,ruleId:rule.id,ts:now});t.bid=rule.param;}
-        else if(rule.action==='pause_plan'){t.status='paused';detail.change='计划已暂停';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
-        else if(rule.action==='resume_plan'){t.status='active';detail.change='计划已启动';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'paused',newValue:'active',pct:0,ruleId:rule.id,ts:now});}
+          else{const old=t.bid;const nv=+(old*(1+pct/100)).toFixed(2);detail={old,newVal:nv,change:`出价 ${old}→${nv}元`};ov.push({targetType:'keyword',targetId:t.id,field:'bid',oldValue:old,newValue:nv,pct,ruleId:rule.id,ts:now});t.bid=nv;
+            if(writeback&&t.bidword_id)writes.push({type:'bid',bidword_id:t.bidword_id,campaign_id:t.campaign_id,adgroup_id:t.adgroup_id,word:t.name,newBid:nv,rule:rule.name});}
+        }else if(rule.action==='bid_set'){const old=t.bid;detail={old,newVal:rule.param,change:`出价 ${old}→${rule.param}元`};ov.push({targetType:'keyword',targetId:t.id,field:'bid',oldValue:old,newValue:rule.param,pct:0,ruleId:rule.id,ts:now});t.bid=rule.param;if(writeback&&t.bidword_id)writes.push({type:'bid',bidword_id:t.bidword_id,campaign_id:t.campaign_id,adgroup_id:t.adgroup_id,word:t.name,newBid:rule.param,rule:rule.name});}
+        else if(rule.action==='pause_plan'){t.status='paused';detail.change='计划已暂停';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});if(writeback&&t.campaign_id)writes.push({type:'status',campaign_id:t.campaign_id,status:'pause',name:t.name,rule:rule.name});}
+        else if(rule.action==='resume_plan'){t.status='active';detail.change='计划已启动';ov.push({targetType:'campaign',targetId:t.id,field:'status',oldValue:'paused',newValue:'active',pct:0,ruleId:rule.id,ts:now});if(writeback&&t.campaign_id)writes.push({type:'status',campaign_id:t.campaign_id,status:'start',name:t.name,rule:rule.name});}
         else if(rule.action==='pause_kw'){t.status='paused';detail.change='关键词已暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
         else if(rule.action==='premium_up'||rule.action==='premium_down'){
           const sName=currentStore()||'demo';
@@ -3389,13 +3408,51 @@ const RuleEngine={
         }
         else if(rule.action==='neg_kw'){const neg=LS.get('negative_'+(currentStore()||'demo'),[]);if(!neg.includes(t.name))neg.push(t.name);LS.set('negative_'+(currentStore()||'demo'),neg);t.status='paused';detail.change='已加入否词库并暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
         else if(rule.action==='alert'){detail.change='仅告警，未执行变更';}
-        exec.unshift({ruleId:rule.id,ruleName:rule.name,store:currentStore()||'demo',targetType:rule.level,targetId:t.id,metric:rule.metric,actual:v,threshold:rule.threshold,action:rule.action,change:detail.change||'-',ts:now});
+        exec.unshift({ruleId:rule.id,ruleName:rule.name,store:currentStore()||'demo',targetType:rule.level,targetId:t.id,targetName:t.name,metric:rule.metric,actual:v,threshold:rule.threshold,action:rule.action,change:detail.change||'-',writeback:writeback&&writes.length?'pending':'local',ts:now});
       });
     });
     this.saveOverrides(ov.slice(-500));
     LS.set(this.storeKey('rule_exec'),exec.slice(0,500));
-    if(verbose){toast(fired?('执行完成：触发'+fired+'个目标'):'执行完成：当前无触发');this.renderRules();}
+    // 执行真实写回队列（串行+节流，避免触发限流）
+    let wbOk=0,wbFail=0;
+    if(writes.length){
+      if(verbose)toast('规则触发'+writes.length+'个真实写回操作，执行中...');
+      for(const w of writes){
+        try{
+          let ok=false;
+          if(w.type==='bid'){ok=await this._wbBid(w);}
+          else if(w.type==='budget'){ok=await this._wbBudget(w);}
+          else if(w.type==='status'){ok=await this._wbStatus(w);}
+          ok?wbOk++:wbFail++;
+          // 更新对应exec记录写回状态
+          const rec=exec.filter(e=>e.ts===now&&e.targetId===String(w.bidword_id||w.campaign_id))[0];
+          if(rec)rec.writeback=ok?'✅已真实写回万相台':'❌写回失败';
+        }catch(e){wbFail++;}
+        await new Promise(r=>setTimeout(r,400));
+      }
+      LS.set(this.storeKey('rule_exec'),exec.slice(0,500));
+      // 写回后刷新真实数据反映新值
+      try{await DataAdapter.refreshRealData();}catch(e){}
+    }
+    if(verbose){
+      let msg=fired?('执行完成：触发'+fired+'个目标'):('执行完成：当前无触发');
+      if(writes.length)msg+='，真实写回成功'+wbOk+'个'+(wbFail?('，失败'+wbFail+'个'):'');
+      toast(msg);
+      this.renderRules();
+    }
     renderOverview();
+  },
+  async _wbBid(w){
+    const d=await DataAdapter.proxy('taobao.universalbp.new.bidword.update',{word_update_request_v_o:JSON.stringify({bidword_list:[{bidword_id:w.bidword_id,campaign_id:w.campaign_id,adgroup_id:w.adgroup_id,word:w.word,bid_price:String(w.newBid)}]})});
+    return JSON.stringify(d).indexOf('"ok":true')>=0;
+  },
+  async _wbBudget(w){
+    const d=await DataAdapter.proxy('taobao.universalbp.new.campaign.budget.batchupdate',{campaign_budget_list_v_o:JSON.stringify({budget_list:[{campaign_id:w.campaign_id,day_budget:w.newBudget,dmc_type:'normal'}]})});
+    return JSON.stringify(d).indexOf('"ok":true')>=0;
+  },
+  async _wbStatus(w){
+    const d=await DataAdapter.proxy('taobao.universalbp.new.campaign.updatepart',{campaign_update_part_list_v_o:JSON.stringify({campaign_list:[{campaign_id:w.campaign_id,display_status:w.status}]})});
+    return JSON.stringify(d).indexOf('"ok":true')>=0;
   },
   augmentCampaignRows(rows){
     const ov=this.getOverrides();
@@ -3426,8 +3483,8 @@ const RuleEngine={
     html+='<div class="flex justify-between items-center mb-2"><h4>执行记录（'+exec.length+'条）</h4><button class="btn btn-sm btn-secondary" onclick="RuleEngine.exportLog()"><i class="fa-solid fa-download"></i> 导出CSV</button></div>';
     if(!exec.length)html+='<div class="result-box"><p class="text-sm text-gray">暂无执行记录。添加规则后点击"立即执行全部规则"。</p></div>';
     else{
-      html+='<table class="data-table"><thead><tr><th>时间</th><th>规则</th><th>对象</th><th>触发详情</th><th>动作</th><th>变更</th></tr></thead><tbody>';
-      html+=exec.slice(0,100).map(e=>{const d=new Date(e.ts);return `<tr><td class="text-xs">${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0,5)}</td><td class="text-xs font-bold">${e.ruleName}</td><td class="text-xs">${e.targetType}:${e.targetId}</td><td class="text-xs">${metricLabel(e.metric)}=${e.actual} vs 阈值${e.threshold}</td><td class="text-xs">${actLabel(e.action)}</td><td class="text-xs">${e.change}</td></tr>`;}).join('');
+      html+='<table class="data-table"><thead><tr><th>时间</th><th>规则</th><th>对象</th><th>触发详情</th><th>动作</th><th>变更</th><th>写回</th></tr></thead><tbody>';
+      html+=exec.slice(0,100).map(e=>{const d=new Date(e.ts);const wb=e.writeback&&e.writeback.indexOf('✅')>=0?'<span class="badge badge-green">已真实写回</span>':(e.writeback&&e.writeback.indexOf('❌')>=0?'<span class="badge badge-red">写回失败</span>':'<span class="badge badge-gray">本地</span>');return `<tr><td class="text-xs">${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0,5)}</td><td class="text-xs font-bold">${e.ruleName}</td><td class="text-xs">${e.targetType}:${e.targetName||e.targetId}</td><td class="text-xs">${metricLabel(e.metric)}=${e.actual} vs 阈值${e.threshold}</td><td class="text-xs">${actLabel(e.action)}</td><td class="text-xs">${e.change}</td><td>${wb}</td></tr>`;}).join('');
       html+='</tbody></table>';
     }
     document.getElementById('reBody').innerHTML=html;
