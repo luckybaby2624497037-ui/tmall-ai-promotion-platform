@@ -41,6 +41,53 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
+// ===================== 每日推广诊断报告 · 钉钉推送 =====================
+// 架构：前端「生成今日报告」时把最新报告快照 POST 到 /api/report/snapshot；
+// 推送配置（时间/星期/webhook/加签secret）由前端保存到 /api/report/config（持久化到磁盘 JSON）。
+// 服务端调度器每分钟检查一次：当前 时:分 命中配置时间 且 星期启用 且 webhook 已配置，
+// 则把最新快照以 markdown 消息推送到钉钉群机器人（每个时间点每天仅推一次）。
+const REPORT_CONFIG_FILE = path.join(__dirname, 'report_config.json');
+const REPORT_SNAPSHOT_FILE = path.join(__dirname, 'report_snapshot.json');
+
+function readJsonFile(fp) {
+  try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (e) { return null; }
+}
+function writeJsonFile(fp, obj) {
+  try { fs.writeFileSync(fp, JSON.stringify(obj, null, 2), 'utf8'); return true; }
+  catch (e) { console.error('[report] 写入失败 ' + fp + ': ' + e.message); return false; }
+}
+function loadReportConfig() {
+  const saved = readJsonFile(REPORT_CONFIG_FILE) || {};
+  return {
+    time: String(saved.time || '09:00'),
+    weekdays: Array.isArray(saved.weekdays) && saved.weekdays.length ? saved.weekdays.map(Number) : [1, 2, 3, 4, 5],
+    webhook: String(saved.webhook || ''),
+    secret: String(saved.secret || '')
+  };
+}
+// 钉钉加签：sign = base64(HmacSHA256(timestamp + '\n' + secret, secret))，URL 编码后追加
+function dingtalkSignedUrl(webhook, secret) {
+  if (!secret) return webhook;
+  const ts = Date.now();
+  const stringToSign = ts + '\n' + secret;
+  const sign = crypto.createHmac('sha256', secret).update(stringToSign, 'utf8').digest('base64');
+  const sep = webhook.indexOf('?') >= 0 ? '&' : '?';
+  return webhook + sep + 'timestamp=' + ts + '&sign=' + encodeURIComponent(sign);
+}
+async function pushDingtalkMarkdown(webhook, secret, title, text) {
+  if (!webhook) return { status: 'not_configured', message: '未配置钉钉Webhook' };
+  const url = dingtalkSignedUrl(webhook, secret);
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json;charset=utf-8' },
+    body: JSON.stringify({ msgtype: 'markdown', markdown: { title: title || '推广日报', text: text || '' } })
+  });
+  const bodyText = await resp.text();
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch (e) { parsed = { raw: bodyText, parse_error: true }; }
+  return { status: 'ok', httpStatus: resp.status, upstream: parsed };
+}
+
 // ===================== 工具函数 =====================
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -362,6 +409,54 @@ async function handleApi(req, res, pathname, query) {
     }
   }
 
+  // ---------- 推广日报：推送配置（持久化 report_config.json） ----------
+  if (req.method === 'GET' && pathname === '/api/report/config') {
+    return sendJSON(res, 200, { status: 'ok', config: loadReportConfig() });
+  }
+  if (req.method === 'POST' && pathname === '/api/report/config') {
+    const body = await readBody(req);
+    const cur = loadReportConfig();
+    const cfg = {
+      time: /^\d{2}:\d{2}$/.test(String(body.time || '')) ? String(body.time) : cur.time,
+      weekdays: Array.isArray(body.weekdays) && body.weekdays.length ? body.weekdays.map(Number).filter(n => n >= 0 && n <= 6) : cur.weekdays,
+      webhook: body.webhook !== undefined ? String(body.webhook).trim() : cur.webhook,
+      secret: body.secret !== undefined ? String(body.secret).trim() : cur.secret
+    };
+    writeJsonFile(REPORT_CONFIG_FILE, cfg);
+    log(req, `报告推送配置已保存 time=${cfg.time} weekdays=${cfg.weekdays.join(',')} webhook=${cfg.webhook ? '已配置' : '未配置'}`);
+    return sendJSON(res, 200, { status: 'ok', config: cfg });
+  }
+
+  // ---------- 推广日报：报告快照（前端每次生成后同步，供定时推送） ----------
+  if (req.method === 'POST' && pathname === '/api/report/snapshot') {
+    const body = await readBody(req);
+    const snap = {
+      title: String(body.title || '天猫推广日报'),
+      markdown: String(body.markdown || body.text || ''),
+      savedAt: new Date().toISOString()
+    };
+    if (!snap.markdown) return sendJSON(res, 400, { status: 'error', message: '缺少 markdown 内容' });
+    writeJsonFile(REPORT_SNAPSHOT_FILE, snap);
+    log(req, `报告快照已保存（${snap.markdown.length}字符）`);
+    return sendJSON(res, 200, { status: 'ok', savedAt: snap.savedAt });
+  }
+
+  // ---------- 推广日报：立即推送（前端「测试推送」/手动推送） ----------
+  if (req.method === 'POST' && pathname === '/api/report/push') {
+    const body = await readBody(req);
+    const cfg = loadReportConfig();
+    const webhook = String(body.webhook || cfg.webhook || '').trim();
+    const secret = String(body.secret !== undefined ? body.secret : cfg.secret || '').trim();
+    if (!webhook) return sendJSON(res, 200, { status: 'not_configured', message: '未配置钉钉Webhook，请在前端「推送设置」中填写并保存' });
+    try {
+      const r = await pushDingtalkMarkdown(webhook, secret, body.title || '天猫推广日报', body.markdown || body.text || '');
+      log(req, `手动推送: ${JSON.stringify(r.upstream || {}).slice(0, 200)}`);
+      return sendJSON(res, 200, r);
+    } catch (e) {
+      return sendJSON(res, 200, { status: 'error', message: '推送失败: ' + e.message });
+    }
+  }
+
   // 404
   sendJSON(res, 404, { status: 'error', message: 'API not found: ' + req.method + ' ' + pathname });
 }
@@ -429,3 +524,31 @@ server.listen(PORT, HOST, () => {
   console.log(`  回调地址: ${CONFIG.redirectUri}`);
   console.log('==============================================');
 });
+
+// ===================== 推广日报定时推送调度器 =====================
+// 每分钟检查：now 的 HH:MM === config.time 且 今天星期在 config.weekdays 内 且 webhook 已配置
+// → 将前端最新同步的报告快照（report_snapshot.json）以 markdown 消息推送到钉钉群机器人。
+// 快照不存在时仅记录提醒（请打开平台生成一次报告）。同一时间点每天只推一次。
+let lastReportPushKey = '';
+setInterval(async () => {
+  try {
+    const cfg = loadReportConfig();
+    if (!cfg.webhook) return;
+    const now = new Date();
+    const hm = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
+    if (hm !== cfg.time) return;
+    if (!cfg.weekdays.includes(now.getDay())) return;
+    const pushKey = now.toDateString() + '_' + hm;
+    if (lastReportPushKey === pushKey) return;
+    lastReportPushKey = pushKey;
+    const snap = readJsonFile(REPORT_SNAPSHOT_FILE);
+    if (!snap || !snap.markdown) {
+      console.log(`[报告调度] ${now.toLocaleString('zh-CN')} 命中推送时间，但暂无报告快照（请在平台「决策驾驶舱」生成一次日报以更新快照），本次跳过`);
+      return;
+    }
+    const r = await pushDingtalkMarkdown(cfg.webhook, cfg.secret, snap.title || '天猫推广日报', snap.markdown);
+    console.log(`[报告调度] ${now.toLocaleString('zh-CN')} 推送结果: ` + JSON.stringify(r).slice(0, 300));
+  } catch (e) {
+    console.error('[报告调度] 异常:', e.message);
+  }
+}, 60 * 1000).unref();
