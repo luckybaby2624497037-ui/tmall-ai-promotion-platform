@@ -332,7 +332,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V24</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V25</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -964,6 +964,31 @@ const DataAdapter={
     this.apiStatus.keywords='演示数据';
     return {live:false,data:getKeywords()};
   },
+  // ---------- 万相台否词（屏蔽词）读写 ----------
+  // blackword.find 必须同时传 campaign_id+adgroup_id；update 用 op_type add/del 增量操作
+  async fetchBlackwords(cid,agid){
+    if(this.mode!=='real')return {live:false,data:LS.get('s22negs',['免费试用','假货','仿品','山寨'])};
+    try{
+      const d=await this.proxy('taobao.universalbp.new.blackword.find',{bidword_single_query_v_o:JSON.stringify({campaign_id:+cid,adgroup_id:+agid})});
+      const err=this.upstreamError(d);
+      if(!err&&d.status==='ok'){
+        const list=this.extractList(d.response);
+        return {live:true,data:list.map(w=>({word:w.word,match_scope:w.match_scope,block_query_type:w.block_query_type||'OTHER',black_word_id:w.black_word_id,campaign_id:w.campaign_id||cid,adgroup_id:w.adgroup_id||agid})),real:true};
+      }
+      return {live:false,err:err||'查询失败',data:[]};
+    }catch(e){return {live:false,err:e.message,data:[]};}
+  },
+  async addBlackword(cid,agid,word,matchScope){
+    const d=await this.proxy('taobao.universalbp.new.blackword.update',{bid_black_word_v_o:JSON.stringify({black_word_list:[{op_type:'add',campaign_id:+cid,adgroup_id:+agid,word:word,match_scope:matchScope||1}]})});
+    const s=JSON.stringify(d);
+    return {ok:s.indexOf('"ok":true')>=0&&s.indexOf('ok":false')<0,msg:(s.match(/"message":"([^"]+)"/)||[])[1]||''};
+  },
+  async delBlackword(rec){
+    // 删除必须原样回传完整记录（black_word_id/match_scope/block_query_type），op_type:del
+    const d=await this.proxy('taobao.universalbp.new.blackword.update',{bid_black_word_v_o:JSON.stringify({black_word_list:[{op_type:'del',campaign_id:+rec.campaign_id,adgroup_id:+rec.adgroup_id,word:rec.word,match_scope:+rec.match_scope||1,block_query_type:rec.block_query_type||'OTHER',black_word_id:+rec.black_word_id,is_high_light:rec.is_high_light||0}]})});
+    const s=JSON.stringify(d);
+    return {ok:s.indexOf('"ok":true')>=0&&s.indexOf('ok":false')<0,msg:(s.match(/"message":"([^"]+)"/)||[])[1]||''};
+  },
   async fetchSycmData(storeName){
     // 导入数据优先（隔离模式：默认当前店铺，可指定storeName）
     const curStore=storeName||this._currentStoreName();
@@ -1087,7 +1112,7 @@ const DataAdapter={
             const list=this.extractList(d.response);
             list.forEach(a=>{
               if(a.adgroup_id)agIds.push(a.adgroup_id);
-              if(a.adgroup_name)agRows.push({'单元名称':a.adgroup_name,'计划名称':a.campaign_name||c['计划名称'],'状态':a.display_status||'','商品':(a.material&&(a.material.title||a.material.item_name))||(a.adgroup_name||''),'增长数据':(a.material&&a.material.grow_desc)||''});
+              if(a.adgroup_name)agRows.push({'单元名称':a.adgroup_name,'单元ID':a.adgroup_id,'计划ID':a.campaign_id||c['计划ID'],'计划名称':a.campaign_name||c['计划名称'],'状态':a.display_status||'','商品':(a.material&&(a.material.title||a.material.item_name))||(a.adgroup_name||''),'增长数据':(a.material&&a.material.grow_desc)||''});
             });
           }
         }catch(e){}
@@ -1919,21 +1944,86 @@ async function s21SetBid(ki,val){
 }
 function s21Adj(si,ki,dir){const stores=getStores().filter(s=>s.status!=='已过期').slice(0,6);const store=stores[si];const kws=LS.get('s21_'+store.name,[]);kws[ki].bid=Math.max(0.1,kws[ki].bid+dir*0.2);kws[ki].rank=Math.max(1,Math.min(10,kws[ki].rank-dir));LS.set('s21_'+store.name,kws);s21Tab(si);}
 
-// ===== S22: 跨店否词同步 =====
+// ===== S22: 否词库管理（真实否词+写回） =====
 function renderS22(mod,skill){
   openModal(skill.name,`<i class="fa-solid ${skill.icon}"></i>`,mod.color,`
-    <div class="flex gap-3 mb-3"><input id="s22Word" placeholder="输入否词" style="flex:1;padding:6px 12px;border:1px solid var(--c-border);border-radius:6px"><button class="btn btn-primary btn-sm" onclick="s22Add()">添加否词</button></div>
-    <div class="mb-3"><label class="text-sm font-bold mb-2">同步目标店铺：</label><div id="s22Stores" class="flex flex-wrap gap-2"></div></div>
-    <div id="s22List" class="mb-3"></div>
-    <div id="s22Result"></div>
+    <div id="s22Real"></div>
+    <div id="s22LocalWrap" class="none">
+      <div class="flex gap-3 mb-3"><input id="s22Word" placeholder="输入否词" style="flex:1;padding:6px 12px;border:1px solid var(--c-border);border-radius:6px"><button class="btn btn-primary btn-sm" onclick="s22Add()">添加否词</button></div>
+      <div id="s22List" class="mb-3"></div>
+    </div>
     ${skillRuleHtml('s22')}
   `,mb=>{s22Init();skillRuleRender('s22');});
 }
-function s22Init(){const stores=getCompareStores();document.getElementById('s22Stores').innerHTML=stores.map((s,i)=>`<span class="pill active" data-idx="${i}">${s.name}</span>`).join('');s22RenderList();}
+async function s22Init(){
+  if(DataAdapter.mode==='real'&&(DataAdapter.realCampaigns||[]).length){
+    const camps=DataAdapter.realCampaigns.filter(c=>c['计划ID']);
+    let html=`<div class="result-box mb-2"><div class="flex gap-2 items-center flex-wrap"><span class="text-sm font-bold">选择计划：</span><select id="s22Camp" onchange="s22Load()" style="padding:6px;border:1px solid var(--c-border);border-radius:6px;max-width:320px">`;
+    camps.forEach(c=>{
+      const ags=(DataAdapter.realAdgroups||[]).filter(a=>String(a['计划ID'])===String(c['计划ID']));
+      if(ags.length)html+=`<option value="${c['计划ID']}" data-name="${c['计划名称']}">${c['计划名称']}（${ags.length}单元）</option>`;
+    });
+    html+=`</select><select id="s22Ag" onchange="s22Load()" style="padding:6px;border:1px solid var(--c-border);border-radius:6px;max-width:260px"></select><span class="text-xs text-gray">否词按 计划×单元 生效</span></div>
+    <div class="flex gap-3 mt-2"><input id="s22WordR" placeholder="输入新否词（精确拦截=1，短语拦截=2）" style="flex:1;padding:6px 12px;border:1px solid var(--c-border);border-radius:6px"><select id="s22Scope" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"><option value="1">精确匹配</option><option value="2">短语匹配</option></select><button class="btn btn-primary btn-sm" onclick="s22AddReal()"><i class="fa-solid fa-plus"></i> 添加否词</button></div>
+    <p class="text-xs text-gray mt-2">写回开关（推广工作台/关键词面板顶部"真实写回"）开启时，添加/删除将真实写入万相台；关闭时仅本地记录。</p></div>
+    <div id="s22RealList" class="result-box"><p class="text-sm text-gray"><i class="fa-solid fa-spinner fa-spin"></i> 否词加载中...</p></div>`;
+    document.getElementById('s22Real').innerHTML=html;
+    s22FillAg();
+    s22Load();
+    return;
+  }
+  document.getElementById('s22LocalWrap').classList.remove('none');
+  document.getElementById('s22Real').innerHTML='<p class="text-xs text-gray mb-2">演示模式：本地否词表（授权店铺后自动切换为真实否词库）</p>';
+  s22RenderList();
+}
+function s22FillAg(){
+  const cid=document.getElementById('s22Camp').value;
+  const ags=(DataAdapter.realAdgroups||[]).filter(a=>String(a['计划ID'])===String(cid));
+  document.getElementById('s22Ag').innerHTML=ags.map(a=>`<option value="${a['单元ID']}" data-name="${a['单元名称']}">${a['单元名称'].slice(0,18)}</option>`).join('')||'<option value="">（无单元）</option>';
+}
+async function s22Load(){
+  s22FillAg();
+  const sel=document.getElementById('s22Camp');
+  const cid=sel.value, agid=document.getElementById('s22Ag').value;
+  if(!cid||!agid){document.getElementById('s22RealList').innerHTML='<p class="text-sm text-gray">请选择计划与单元</p>';return;}
+  const cname=sel.options[sel.selectedIndex].dataset.name||'';
+  const agEl=document.getElementById('s22Ag');
+  const agname=agEl.options[agEl.selectedIndex].dataset.name||'';
+  const box=document.getElementById('s22RealList');
+  box.innerHTML='<p class="text-sm text-gray"><i class="fa-solid fa-spinner fa-spin"></i> 拉取真实否词...</p>';
+  const r=await DataAdapter.fetchBlackwords(cid,agid);
+  if(!r.live&&!r.real){box.innerHTML='<p class="text-sm text-red">否词查询失败：'+(r.err||'未知')+'</p>';return;}
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  box.innerHTML=`<h4 class="mb-2">${cname} / ${agname.slice(0,14)} · 真实否词 ${r.data.length}个 ${wb?'<span class="badge badge-green">写回开·真实生效</span>':'<span class="badge badge-yellow">写回关·仅本地</span>'}</h4>`+
+    (r.data.length?`<table class="data-table"><thead><tr><th>否词</th><th>匹配</th><th>类型</th><th>操作</th></tr></thead><tbody>`+r.data.map((w,i)=>`<tr><td class="text-sm">${w.word}</td><td><span class="badge badge-gray">${(+w.match_scope)===1?'精确':'短语'}</span></td><td class="text-xs text-gray">${w.block_query_type||'-'}</td><td><button class="btn btn-sm btn-danger" onclick="s22DelReal(${i})"><i class="fa-solid fa-xmark"></i> 删除</button></td></tr>`).join('')+`</tbody></table>`:'<p class="text-sm text-gray">该单元暂无否词</p>');
+  window.__s22words=r.data;
+}
+async function s22AddReal(){
+  const w=(document.getElementById('s22WordR').value||'').trim();
+  if(!w){toast('请输入否词');return;}
+  const cid=document.getElementById('s22Camp').value,agid=document.getElementById('s22Ag').value;
+  const scope=parseInt(document.getElementById('s22Scope').value)||1;
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  if(!wb){toast('写回未开启，仅本地记录（在关键词面板开启"真实写回"后生效）');return;}
+  toast('正在写入万相台...');
+  const r=await DataAdapter.addBlackword(cid,agid,w,scope);
+  if(r.ok){toast('✅ 否词「'+w+'」已真实写入万相台');s22Load();}
+  else toast('❌ 写入失败：'+(r.msg||'未知错误'));
+}
+async function s22DelReal(i){
+  const rec=(window.__s22words||[])[i];
+  if(!rec)return;
+  const wb=LS.get('writeback_'+(currentStore()||'demo'),false);
+  if(!wb){toast('写回未开启，仅本地演示删除');const el=event.target.closest('tr');if(el)el.remove();return;}
+  if(!confirm('确认从万相台删除否词「'+rec.word+'」？'))return;
+  toast('正在删除...');
+  const r=await DataAdapter.delBlackword(rec);
+  if(r.ok){toast('✅ 否词「'+rec.word+'」已从万相台删除');s22Load();}
+  else toast('❌ 删除失败：'+(r.msg||'未知错误'));
+}
 function s22RenderList(){const negs=LS.get('s22negs',['免费试用','假货','仿品','山寨']);document.getElementById('s22List').innerHTML=`<h4 class="mb-2">否词列表</h4>${negs.map((n,i)=>`<span class="badge badge-red" style="margin:2px">${n} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="s22Del(${i})"></i></span>`).join('')}`;}
 function s22Add(){const w=document.getElementById('s22Word').value.trim();if(!w){toast('请输入否词');return;}const negs=LS.get('s22negs',[]);negs.push(w);LS.set('s22negs',negs);document.getElementById('s22Word').value='';s22RenderList();toast('已添加');}
 function s22Del(i){const negs=LS.get('s22negs',[]);negs.splice(i,1);LS.set('s22negs',negs);s22RenderList();}
-function s22Sync(){const stores=getCompareStores();const active=[...document.querySelectorAll('#s22Stores .pill.active')].map(p=>stores[parseInt(p.dataset.idx)]);const negs=LS.get('s22negs',[]);document.getElementById('s22Result').innerHTML=`<div class="result-box"><h4>同步结果</h4>${active.map(s=>`<p class="text-sm"><i class="fa-solid fa-check text-green"></i> ${s.name}: 已同步${negs.length}个否词</p>`).join('')}</div>`;toast('同步完成');}
 
 // ===== S23: 跨店关键词效果排行 =====
 function renderS23(mod,skill){
@@ -3151,7 +3241,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V24</td></tr>
+          <tr><td>平台版本</td><td>V25</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -3430,7 +3520,7 @@ const RuleEngine={
           detail={old:cur,newVal:nv,change:`人群「${t.name}」出价系数 ${cur}%→${nv}%`};
           ov.push({targetType:'audience',targetId:t.id,field:'bidCoef',oldValue:cur,newValue:nv,pct,ruleId:rule.id,ts:now});
         }
-        else if(rule.action==='neg_kw'){const neg=LS.get('negative_'+(currentStore()||'demo'),[]);if(!neg.includes(t.name))neg.push(t.name);LS.set('negative_'+(currentStore()||'demo'),neg);t.status='paused';detail.change='已加入否词库并暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});}
+        else if(rule.action==='neg_kw'){const neg=LS.get('negative_'+(currentStore()||'demo'),[]);if(!neg.includes(t.name))neg.push(t.name);LS.set('negative_'+(currentStore()||'demo'),neg);t.status='paused';detail.change='已加入否词库并暂停';ov.push({targetType:'keyword',targetId:t.id,field:'status',oldValue:'active',newValue:'paused',pct:0,ruleId:rule.id,ts:now});if(writeback&&t.campaign_id&&t.adgroup_id)writes.push({type:'neg',campaign_id:t.campaign_id,adgroup_id:t.adgroup_id,word:t.name,rule:rule.name});}
         else if(rule.action==='alert'){detail.change='仅告警，未执行变更';}
         exec.unshift({ruleId:rule.id,ruleName:rule.name,store:currentStore()||'demo',targetType:rule.level,targetId:t.id,targetName:t.name,metric:rule.metric,actual:v,threshold:rule.threshold,action:rule.action,change:detail.change||'-',writeback:writeback&&writes.length?'pending':'local',ts:now});
       });
@@ -3447,6 +3537,7 @@ const RuleEngine={
           if(w.type==='bid'){ok=await this._wbBid(w);}
           else if(w.type==='budget'){ok=await this._wbBudget(w);}
           else if(w.type==='status'){ok=await this._wbStatus(w);}
+          else if(w.type==='neg'){ok=await this._wbNeg(w);}
           ok?wbOk++:wbFail++;
           // 更新对应exec记录写回状态
           const rec=exec.filter(e=>e.ts===now&&e.targetId===String(w.bidword_id||w.campaign_id))[0];
@@ -3473,6 +3564,10 @@ const RuleEngine={
   async _wbBudget(w){
     const d=await DataAdapter.proxy('taobao.universalbp.new.campaign.budget.batchupdate',{campaign_budget_list_v_o:JSON.stringify({budget_list:[{campaign_id:w.campaign_id,day_budget:w.newBudget,dmc_type:'normal'}]})});
     return JSON.stringify(d).indexOf('"ok":true')>=0;
+  },
+  async _wbNeg(w){
+    const r=await DataAdapter.addBlackword(w.campaign_id,w.adgroup_id,w.word,1);
+    return r&&r.ok;
   },
   async _wbStatus(w){
     const d=await DataAdapter.proxy('taobao.universalbp.new.campaign.updatepart',{campaign_update_part_list_v_o:JSON.stringify({campaign_list:[{campaign_id:w.campaign_id,display_status:w.status}]})});
