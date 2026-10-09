@@ -325,7 +325,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V26</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V27</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -3234,7 +3234,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V26</td></tr>
+          <tr><td>平台版本</td><td>V27</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -4141,6 +4141,12 @@ function renderWbGrids(){
   WORKBENCHES.forEach(wb=>{
     const el=document.getElementById('wb-'+wb.id);
     if(!el)return;
+    if(wb.id==='analyze'){
+      // V27：分析工具收纳为紧凑按钮条——衔接驾驶舱四屏与诊断报告，弱化视觉权重
+      const items=wb.sections.flatMap(sec=>sec.items.map(it=>({name:it.name,icon:it.icon,color:it.color,js:it.js})));
+      el.innerHTML=`<div class="result-box" style="margin-top:20px;padding:14px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span class="text-sm font-bold" style="flex-shrink:0"><i class="fa-solid fa-toolbox" style="color:var(--c-primary)"></i> 扩展分析</span><span class="text-xs text-gray" style="flex-shrink:0">报表 · 归因 · 复盘 · 对账</span><div style="display:flex;gap:8px;flex-wrap:wrap">${items.map(it=>`<button class="btn btn-secondary btn-sm" onclick="${it.js}"><i class="fa-solid ${it.icon}" style="color:${it.color}"></i> ${it.name}</button>`).join('')}</div></div>`;
+      return;
+    }
     el.innerHTML=wb.sections.map(sec=>`<div class="section-title" style="font-size:15px;margin-top:22px"><i class="fa-solid ${sec.icon||'fa-layer-group'}"></i> ${sec.title}</div><div class="tool-grid">${sec.items.map(wbCard).join('')}</div>`).join('');
   });
   ['ops','promote'].forEach(t=>{const b=document.getElementById(t+'StoreBadge');if(b)b.textContent='当前店铺：'+(currentStore()||'演示模式')+'（单店隔离）';});
