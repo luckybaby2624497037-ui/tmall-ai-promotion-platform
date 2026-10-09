@@ -345,7 +345,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V30</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V31</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -3098,16 +3098,29 @@ const AuthUI={
     DataAdapter.refreshRealData().then(()=>{AuthUI.renderTopbar();AuthUI.renderStatusPill();}).catch(()=>{});
   },
   // ---------- 登录弹窗 ----------
+  isLocalBackend(){
+    try{
+      const h=location.hostname;
+      return h==='localhost'||h==='127.0.0.1'||h==='0.0.0.0'||location.protocol==='file:';
+    }catch(e){return false;}
+  },
   openLogin(){
+    const local=this.isLocalBackend();
     openModal('店铺登录','<i class="fa-solid fa-store"></i>','var(--grad-primary)',`
+      ${local?'':'<div class="result-box mb-3" style="background:#fee2e2;border:1px solid #fca5a5"><p class="text-sm" style="color:#991b1b"><i class="fa-solid fa-triangle-exclamation"></i> 当前为在线演示站点，未部署后端服务，无法验证Session接入真实数据。<br>请在本机运行「启动平台.bat」启动本地服务（localhost:8081）后登录，本地环境可直连万相台无界版接口。</p></div>'}
       <div class="result-box mb-3"><p class="text-sm text-gray"><i class="fa-solid fa-circle-info"></i> 输入店铺名称与万相台无界版授权Session令牌，验证通过后该店铺真实数据自动接入全平台。多店铺可重复本流程分别添加。</p></div>
-      <div class="form-group"><label>店铺名称（用于展示）</label><input id="loginShopName" placeholder="如：旗舰店-美妆官方"></div>
-      <div class="form-group"><label>Session令牌（access_token）</label><textarea id="loginSession" rows="3" placeholder="粘贴万相台无界版授权的session字符串，通常为一长串字母数字" style="width:100%;padding:8px;border:1px solid var(--c-border);border-radius:6px;font-family:monospace;font-size:12px"></textarea></div>
-      <button class="btn btn-primary" id="loginBtn" onclick="AuthUI.doLogin()"><i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺</button>
+      <div class="form-group"><label>店铺名称（用于展示）</label><input id="loginShopName" placeholder="如：旗舰店-美妆官方" ${local?'':'disabled style="background:#f1f5f9"'}></div>
+      <div class="form-group"><label>Session令牌（access_token）</label><textarea id="loginSession" rows="3" placeholder="粘贴万相台无界版授权的session字符串，通常为一长串字母数字" style="width:100%;padding:8px;border:1px solid var(--c-border);border-radius:6px;font-family:monospace;font-size:12px" ${local?'':'disabled style="background:#f1f5f9"'}></textarea></div>
+      <button class="btn btn-primary" id="loginBtn" onclick="AuthUI.doLogin()" ${local?'':'disabled'}><i class="fa-solid fa-right-to-bracket"></i> ${local?'验证并添加店铺':'本地环境可用'}</button>
       <div id="loginMsg" class="mt-3"></div>
     `);
   },
   async doLogin(){
+    if(!this.isLocalBackend()){
+      const m0=document.getElementById('loginMsg');
+      if(m0)m0.innerHTML='<div class="result-box"><p class="text-sm text-red">在线演示站点无后端服务。请在本机启动本地平台（启动平台.bat → localhost:8081）后重新登录。</p></div>';
+      return;
+    }
     const shopName=((document.getElementById('loginShopName')||{}).value||'').trim();
     const session=((document.getElementById('loginSession')||{}).value||'').trim();
     const btn=document.getElementById('loginBtn');
@@ -3122,7 +3135,14 @@ const AuthUI={
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({session:session,method:'taobao.universalbp.new.campaign.findpage',bizParams:{campaign_query_v_o:JSON.stringify({offset:0,page_size:5})}})
       });
-      const d=await r.json();
+      const rawText=await r.text();
+      let d=null;
+      try{d=JSON.parse(rawText);}catch(pe){
+        // 后端返回了非JSON（HTML错误页等）
+        if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">本地后端服务未正常运行（返回了非JSON响应）。请在平台目录运行「启动平台.bat」重启服务后重试。</p></div>';
+        if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
+        return;
+      }
       let verified=false;
       let nick='';
       if(d&&d.status==='ok'&&d.response){
@@ -3153,7 +3173,7 @@ const AuthUI={
         if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
       }
     }catch(e){
-      if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">无法连接后端服务（'+e.message+'）。</p></div>';
+      if(msg)msg.innerHTML='<div class="result-box"><p class="text-sm text-red">无法连接本地后端服务（'+e.message+'）。请确认已通过「启动平台.bat」启动平台，且浏览器访问的是 localhost:8081。</p></div>';
       if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-right-to-bracket"></i> 验证并添加店铺';}
     }
   },
@@ -3254,7 +3274,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V30</td></tr>
+          <tr><td>平台版本</td><td>V31</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
