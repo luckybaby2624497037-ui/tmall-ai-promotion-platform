@@ -332,7 +332,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V23</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V24</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -364,7 +364,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 
 <!-- TAB 2: 决策驾驶舱（老板视角 · 跨店） -->
 <div class="tab-panel" id="tab-cockpit">
-  <div class="section-title"><i class="fa-solid fa-tower-cell"></i> 决策驾驶舱 <span class="text-xs text-gray">老板视角 · 跨店大盘 / 诊断 / 报表归因复盘对账（原分析工作台已合并至此）</span></div>
+  <div class="section-title"><i class="fa-solid fa-tower-cell"></i> 决策驾驶舱 <span class="text-xs text-gray">老板视角 · 四屏决策（结果 → 异常 → 真伪 → 行动）+ 推广诊断报告 + 报表归因复盘对账</span></div>
   <div id="cockpitBody"></div>
   <div id="wb-analyze"></div>
 </div>
@@ -3151,7 +3151,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V23</td></tr>
+          <tr><td>平台版本</td><td>V24</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -4071,43 +4071,296 @@ const CK_QUICK=[
  {name:'大促日历',icon:'fa-calendar-days',color:'#ec4899',desc:'全年大促节奏（s52）',js:"openSkill('m10','s52')"},
  {name:'大促预算规划',icon:'fa-money-check-dollar',color:'#f97316',desc:'GMV目标反推预算（s54）',js:"openSkill('m10','s54')"}
 ];
+// ===================== 决策驾驶舱 · 管理层四屏决策（结果/异常/真伪/行动） =====================
+// 三大铁律：不展示原始数据 · 每个数字带参照物(目标/上期/行业/排名) · 交互极简(筛选/下钻/导出)
+const CK_SNAP_KEY='cockpit_snapshots',CK_TARGET_KEY='cockpit_targets',CK_ECON_KEY='store_econ';
+function ckTargets(){let s={};try{s=LS.get(CK_TARGET_KEY,{})||{};}catch(e){}return Object.assign({roiTarget:2.0,budgetTotal:0,industryReturn:20},s);}
+function ckSaveTargets(o){LS.set(CK_TARGET_KEY,Object.assign(ckTargets(),o));}
+function ckEcon(){let s={};try{s=LS.get(CK_ECON_KEY,{})||{};}catch(e){}return Object.assign({returnRate:{},organicGmv:{}},s);}
+function ckSaveEcon(o){LS.set(CK_ECON_KEY,Object.assign(ckEcon(),o));}
+function ckSnapshots(){try{return LS.get(CK_SNAP_KEY,[])||[];}catch(e){return[];}}
+function ckSaveSnapshot(stores){
+  const d=fmtD(new Date());
+  let list=ckSnapshots().filter(x=>x.date!==d);
+  list.push({date:d,ts:Date.now(),stores:stores.map(s=>({name:s.name,spend:+s.spend||0,gmv:+s.gmv||0,roi:+s.roi||0}))});
+  if(list.length>60)list=list.slice(-60);
+  LS.set(CK_SNAP_KEY,list);
+}
+function ckPrevSnapshot(daysBack){
+  const list=ckSnapshots().slice().sort((a,b)=>b.ts-a.ts);
+  const cut=Date.now()-(daysBack-2)*86400000;
+  const cand=list.filter(x=>x.ts<=cut);
+  return cand.length?cand[0]:null;
+}
+// 边际ROI：ΔGMV/ΔSpend（有≥5天前快照=实测；否则按边际递减估算×0.75并标注）
+function ckMarginal(stores){
+  const prev=ckPrevSnapshot(7);
+  return stores.map(s=>{
+    const cur={name:s.name,spend:+s.spend||0,gmv:+s.gmv||0,roi:+s.roi||0};
+    if(prev){
+      const p=prev.stores.find(x=>x.name===s.name);
+      if(p&&Math.abs(cur.spend-p.spend)>10){
+        return {name:s.name,mroi:+(((cur.gmv-p.gmv)/(cur.spend-p.spend))).toFixed(2),src:'实测·近7天增量',roi:cur.roi};
+      }
+    }
+    return {name:s.name,mroi:+(cur.roi*0.75).toFixed(2),src:'估算(边际递减折算)',roi:cur.roi};
+  }).sort((a,b)=>a.mroi-b.mroi);
+}
+function ckArrow(cur,prev){
+  if(prev===null||prev===undefined||!isFinite(prev)) return '<span class="text-xs text-gray">环比 待积累</span>';
+  if(prev===0) return '<span class="text-xs text-gray">新期首现</span>';
+  const pct=((cur-prev)/Math.abs(prev))*100;const up=pct>=0;
+  return '<span class="text-xs '+(up?'text-green':'text-red')+'">'+(up?'↑':'↓')+Math.abs(pct).toFixed(1)+'% 环比</span>';
+}
+// 消耗占比 vs 成交占比 散点（对角线=健康）
+function ckScatter(stores){
+  const W=520,H=320,pad=46;
+  const tS=stores.reduce((t,s)=>t+(+s.spend||0),0)||1;
+  const tG=stores.reduce((t,s)=>t+(+s.gmv||0),0)||1;
+  const pts=stores.map(s=>({n:s.name,x:(+s.spend||0)/tS*100,y:(+s.gmv||0)/tG*100,roi:+s.roi||0}));
+  const maxP=Math.max(...pts.map(p=>Math.max(p.x,p.y)),50);
+  const X=v=>pad+(v/maxP)*(W-pad*2),Y=v=>H-pad-(v/maxP)*(H-pad*2);
+  const grid=[0,0.25,0.5,0.75,1].map(p=>'<line x1="'+pad+'" y1="'+Y(p*maxP)+'" x2="'+(W-pad)+'" y2="'+Y(p*maxP)+'" stroke="#eef2f7"/><text x="'+(pad-5)+'" y="'+(Y(p*maxP)+3)+'" text-anchor="end" font-size="9" fill="#94a3b8">'+Math.round(p*maxP)+'%</text>').join('');
+  const diag='<line x1="'+X(0)+'" y1="'+Y(0)+'" x2="'+X(maxP)+'" y2="'+Y(maxP)+'" stroke="#94a3b8" stroke-dasharray="5 4" stroke-width="1.5"/>';
+  const bubbles=pts.map(p=>{
+    const c=p.x>p.y*1.25?'#ef4444':(p.y>p.x*1.25?'#f59e0b':'#10b981');
+    const r=Math.max(7,Math.min(20,Math.sqrt(p.x+p.y)*1.6));
+    return '<circle cx="'+X(p.x)+'" cy="'+Y(p.y)+'" r="'+r+'" fill="'+c+'" fill-opacity=".75"><title>'+p.n+'｜消耗占比'+p.x.toFixed(1)+'% · 成交占比'+p.y.toFixed(1)+'% · ROI '+p.roi+'</title></circle><text x="'+X(p.x)+'" y="'+(Y(p.y)-r-3)+'" text-anchor="middle" font-size="9" fill="#475569">'+p.n.slice(0,6)+'</text>';
+  }).join('');
+  return '<div class="line-chart"><svg viewBox="0 0 '+W+' '+H+'">'+grid+diag+bubbles+'<text x="'+pad+'" y="16" font-size="10" fill="#ef4444">左上·烧钱不出货</text><text x="'+(W-pad)+'" y="'+(H-10)+'" text-anchor="end" font-size="10" fill="#f59e0b">右下·白嫖流量</text></svg></div><p class="text-xs text-gray mt-1">横轴=消耗占比 · 纵轴=成交占比 · 虚线对角线=健康；偏离越远预算错配越严重 <span style="color:#10b981">●健康</span> <span style="color:#ef4444">●烧钱不出货</span> <span style="color:#f59e0b">●流量白嫖</span></p>';
+}
+// 店铺健康矩阵（ROI/费比/边际ROI 着色）+ 当前店铺渠道ROI
+function ckMatrix(stores,marg){
+  let html='<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>店铺/品牌</th><th>综合ROI</th><th>费比(花费/GMV)</th><th>边际ROI</th><th>消耗占比</th><th>判定</th></tr></thead><tbody>';
+  const tS=stores.reduce((t,s)=>t+(+s.spend||0),0)||1;
+  stores.forEach(s=>{
+    const roi=+s.roi||0,febi=(+s.gmv>0)?((+s.spend/+s.gmv)*100):null;
+    const m=marg.find(x=>x.name===s.name)||{mroi:0,src:'-'};
+    const rc=roi>=2.5?'#16a34a':roi>=1.5?'#ca8a04':'#dc2626';
+    const fc=febi===null?'#94a3b8':(febi<=25?'#16a34a':febi<=40?'#ca8a04':'#dc2626');
+    const mc=m.mroi>=1.5?'#16a34a':m.mroi>=1?'#ca8a04':'#dc2626';
+    const share=((+s.spend||0)/tS*100).toFixed(0)+'%';
+    const verdict=(roi>=2.5&&m.mroi>=1.5)?'<span class="badge badge-green">加码</span>':(roi<1.5||m.mroi<1)?'<span class="badge badge-red">收缩</span>':'<span class="badge badge-yellow">观察</span>';
+    html+='<tr><td class="text-sm">'+s.name+'</td><td style="color:'+rc+';font-weight:700">'+(roi||'-')+'</td><td style="color:'+fc+';font-weight:700">'+(febi===null?'-':febi.toFixed(1)+'%')+'</td><td style="color:'+mc+';font-weight:700">'+m.mroi+' <span class="text-xs text-gray" style="font-weight:400">'+m.src.slice(0,4)+'</span></td><td>'+share+'</td><td>'+verdict+'</td></tr>';
+  });
+  html+='</tbody></table></div>';
+  // 当前店铺·渠道ROI
+  const scenes=[...new Set((DataAdapter.realReports||[]).map(r=>r.scene).filter(Boolean))];
+  if(scenes.length){
+    html+='<div class="text-sm font-bold mt-3 mb-1">当前店铺 · 渠道ROI（'+ (currentStore()||'') +'）</div><div class="flex gap-2 flex-wrap">';
+    scenes.forEach(sc=>{
+      const rows=(DataAdapter.realReports||[]).filter(r=>r.scene===sc);
+      const sp=rows.reduce((t,r)=>t+(+r.cost||0),0),gm=rows.reduce((t,r)=>t+(+r.gmv||0),0);
+      const roi=sp>0?+(gm/sp).toFixed(2):null;
+      const bg=roi===null?'#f8fafc':(roi>=2.5?'#dcfce7':roi>=1.5?'#fef9c3':'#fee2e2');
+      const cc=roi===null?'#94a3b8':(roi>=2.5?'#16a34a':roi>=1.5?'#ca8a04':'#dc2626');
+      html+='<div style="background:'+bg+';border-radius:8px;padding:8px 12px;min-width:110px"><div class="text-xs text-gray">'+sc+'</div><div class="text-sm font-bold" style="color:'+cc+'">'+(roi===null?'-':roi)+'</div></div>';
+    });
+    html+='</div><p class="text-xs text-gray mt-1">绿色≥2.5 · 黄色1.5~2.5 · 红色<1.5（目光锁定红色格子）</p>';
+  }
+  return html;
+}
+// 账面 vs 真实ROI 对比柱
+function ckCompareBars(rows){
+  if(!rows.length)return '';
+  const W=520,H=180,pad=30;
+  const maxV=Math.max(...rows.flatMap(r=>[r.book,r.real]),1);
+  const bw=Math.min(34,(W-pad*2)/rows.length/3);
+  let bars='';
+  rows.forEach((r,i)=>{
+    const x0=pad+i*((W-pad*2)/rows.length)+((W-pad*2)/rows.length-bw*2-8)/2;
+    const hB=(r.book/maxV)*(H-pad*2),hR=(r.real/maxV)*(H-pad*2);
+    bars+='<rect x="'+x0+'" y="'+(H-pad-hB)+'" width="'+bw+'" height="'+hB+'" fill="#93c5fd" rx="3"><title>'+r.name+' 账面ROI '+r.book+'</title></rect>';
+    bars+='<rect x="'+(x0+bw+8)+'" y="'+(H-pad-hR)+'" width="'+bw+'" height="'+hR+'" fill="'+(((r.book-r.real)/r.book)>0.2?'#ef4444':'#34d399')+'" rx="3"><title>'+r.name+' 真实ROI '+r.real+'</title></rect>';
+    bars+='<text x="'+(x0+bw)+'" y="'+(H-pad+12)+'" text-anchor="middle" font-size="9" fill="#64748b">'+r.name.slice(0,5)+'</text>';
+  });
+  return '<div class="line-chart"><svg viewBox="0 0 '+W+' '+H+'">'+bars+'<line x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-pad)+'" y2="'+(H-pad)+'" stroke="#cbd5e1"/></svg></div><p class="text-xs text-gray"><span style="color:#93c5fd">■</span>账面ROI <span style="color:#34d399">■</span>真实ROI(剔退)（红色=差距>20%危险）</p>';
+}
+// 账户级每日趋势（GMV/花费）
+async function ckLoadTrend(){
+  const box=document.getElementById('ckTrend');
+  if(!box)return;
+  box.innerHTML='<span class="text-xs text-gray"><i class="fa-solid fa-spinner fa-spin"></i> 趋势加载中...</span>';
+  try{
+    const end=fmtD(new Date());
+    const start=fmtD(new Date(Date.now()-29*86400000));
+    let rows=[];
+    for(const scene of SCENE_CODES){
+      try{
+        const d=await DataAdapter.proxy('taobao.universalbp.new.report.query.account',{
+          top_account_report_query_v_o:JSON.stringify({by_page:true,split_type:'day',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'date',query_field_in_list:['charge','alipayInshopAmt'],offset:0,page_size:40})
+        },scene);
+        if(d&&d.status==='ok'&&!DataAdapter.upstreamError(d)){
+          const list=DataAdapter.extractList(d.response);
+          list.forEach(r=>{const ri=r.report_index||{};rows.push({date:String(r.thedate||r.date||'').slice(5),charge:+(ri.charge)||0,gmv:+(ri.alipay_inshop_amt)||0});});
+          if(rows.length)break;
+        }
+      }catch(e){}
+    }
+    const byDate={};rows.forEach(r=>{if(!r.date)return;byDate[r.date]=byDate[r.date]||{charge:0,gmv:0};byDate[r.date].charge+=r.charge;byDate[r.date].gmv+=r.gmv;});
+    const dates=Object.keys(byDate).sort();
+    if(!dates.length){box.innerHTML='<span class="text-xs text-gray">趋势数据待拉取</span> <button class="btn btn-sm btn-secondary" onclick="ckLoadTrend()">重试</button>';return;}
+    const g7=dates.slice(-7).reduce((t,d)=>t+byDate[d].gmv,0);
+    const gPrev=dates.slice(-14,-7).reduce((t,d)=>t+byDate[d].gmv,0);
+    const wow=gPrev>0?((g7-gPrev)/gPrev*100):null;
+    box.innerHTML='<div>'+(wow===null?'<span class="text-xs text-gray">环比待积累</span>':'<span class="text-xs '+(wow>=0?'text-green':'text-red')+'">'+(wow>=0?'↑':'↓')+Math.abs(wow).toFixed(1)+'% 周环比</span>')+' <span class="text-xs text-gray">近7天 ¥'+Math.round(g7).toLocaleString()+'</span></div>'+lineChart([{name:'GMV',data:dates.map(d=>Math.round(byDate[d].gmv)),color:'#667eea'},{name:'花费',data:dates.map(d=>Math.round(byDate[d].charge)),color:'#f59e0b'}],{width:520,height:140});
+  }catch(e){box.innerHTML='<span class="text-xs text-gray">趋势加载失败，可重试</span> <button class="btn btn-sm btn-secondary" onclick="ckLoadTrend()">重试</button>';}
+}
+// 目标与经营修正设置
+function ckOpenSettings(){
+  const t=ckTargets(),e=ckEcon();
+  const stores=getMyStores();
+  openModal('决策目标与经营修正','<i class="fa-solid fa-sliders"></i>','#667eea',
+    '<div class="result-box mb-2"><h4 class="mb-2">目标与预算</h4><div class="grid-2"><div class="form-group"><label>综合ROI目标</label><input id="ckSetRoi" type="number" step="0.1" value="'+t.roiTarget+'" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div><div class="form-group"><label>推广预算总池(元·留空按花费1.5倍)</label><input id="ckSetBudget" type="number" value="'+(t.budgetTotal||'')+'" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div></div><div class="form-group"><label>行业平均退货率(%)</label><input id="ckSetIndRr" type="number" step="1" value="'+(t.industryReturn||20)+'" style="padding:6px;border:1px solid var(--c-border);border-radius:6px"></div></div>'+
+    '<div class="result-box mb-2"><h4 class="mb-2">各店经营修正（用于真实ROI/全店ROI）</h4><table class="data-table"><thead><tr><th>店铺</th><th>退货率%</th><th>自然流量成交额(元)</th></tr></thead><tbody>'+(stores.length?stores.map(s=>'<tr><td class="text-sm">'+s.shopName+'</td><td><input id="ckRr_'+s.shopName+'" type="number" step="1" value="'+((e.returnRate||{})[s.shopName]||'')+'" style="width:70px;padding:4px;border:1px solid var(--c-border);border-radius:4px"></td><td><input id="ckOrg_'+s.shopName+'" type="number" value="'+((e.organicGmv||{})[s.shopName]||'')+'" style="width:110px;padding:4px;border:1px solid var(--c-border);border-radius:4px"></td></tr>').join(''):'<tr><td colspan="3" class="text-xs text-gray">暂无授权店铺</td></tr>')+'</tbody></table><p class="text-xs text-gray mt-1">退货率/自然成交暂无API，可手工录入或用Excel导入数据；录入后第三屏自动计算真实ROI与全店ROI。</p></div>'+
+    '<button class="btn btn-primary btn-sm" onclick="ckSaveSettings()"><i class="fa-solid fa-check"></i> 保存设置</button>');
+}
+function ckSaveSettings(){
+  const roi=parseFloat((document.getElementById('ckSetRoi')||{}).value)||2.0;
+  const bud=parseInt((document.getElementById('ckSetBudget')||{}).value)||0;
+  const ind=parseFloat((document.getElementById('ckSetIndRr')||{}).value)||20;
+  ckSaveTargets({roiTarget:roi,budgetTotal:bud,industryReturn:ind});
+  const stores=getMyStores();const rr={},org={};
+  stores.forEach(s=>{
+    const rv=(document.getElementById('ckRr_'+s.shopName)||{}).value;
+    const ov=(document.getElementById('ckOrg_'+s.shopName)||{}).value;
+    if(rv!=='')rr[s.shopName]=parseFloat(rv)||0;
+    if(ov!=='')org[s.shopName]=parseFloat(ov)||0;
+  });
+  ckSaveEcon({returnRate:rr,organicGmv:org});
+  closeModal();toast('设置已保存');renderCockpit();
+}
+// 一键导出汇报（Markdown 复制）
+function ckExport(){
+  const box=document.getElementById('cockpitBody');
+  if(!box){toast('请先打开决策驾驶舱');return;}
+  const txt=('【天猫推广决策简报】 '+fmtD(new Date())+'\n\n'+box.innerText.replace(/\n{3,}/g,'\n\n')).slice(0,6000);
+  try{navigator.clipboard.writeText(txt).then(()=>toast('简报已复制到剪贴板，可直接粘贴到钉钉/PPT'));}catch(e){toast('复制失败，请使用打印导出');}
+  LS.set('ck_last_export',txt);
+}
+function ckPrint(){try{window.print();}catch(e){toast('打印失败，请用浏览器菜单导出PDF');}}
+function ckGotoStore(name){
+  try{setCurrentStore(name);toast('已切换到店铺：'+name);}catch(e){toast('该店铺不在授权列表，请先授权');}
+}
+// 依据边际ROI一键生成预算分配
+function cockpitApplyBudget(){
+  const stores=comparisonStores().filter(s=>s.status!=='已过期');
+  if(!stores.length){toast('暂无可分配店铺');return;}
+  const t=ckTargets();
+  const pool=t.budgetTotal>0?t.budgetTotal:Math.round(stores.reduce((s,x)=>s+(+x.spend||0),0)*1.5);
+  const marg=ckMarginal(stores);
+  const w=stores.map(s=>{const m=marg.find(x=>x.name===s.name);return {name:s.name,w:Math.max(0.2,m?m.mroi:1)};});
+  const tw=w.reduce((t,x)=>t+x.w,0);
+  let html='<table class="data-table"><thead><tr><th>店铺</th><th>边际ROI</th><th>建议预算</th><th>较当前</th></tr></thead><tbody>';
+  w.forEach(x=>{
+    const alloc=Math.round(pool*(x.w/tw));
+    const cur=+((stores.find(s=>s.name===x.name)||{}).spend)||0;
+    const delta=alloc-cur;
+    html+='<tr><td class="text-sm">'+x.name+'</td><td>'+x.w.toFixed(2)+'</td><td>¥'+alloc.toLocaleString()+'</td><td style="color:'+(delta>=0?'#16a34a':'#dc2626')+'">'+(delta>=0?'+':'-')+'¥'+Math.abs(Math.round(delta)).toLocaleString()+'</td></tr>';
+  });
+  html+='</tbody></table><p class="text-xs text-gray mt-1">分配权重=边际ROI（越大越倾向加码）；预算池¥'+pool.toLocaleString()+'（可在设置中调整）。执行可到「推广工作台-预算调整」按店落地。</p>';
+  const el=document.getElementById('ckBudgetResult2');
+  if(el)el.innerHTML=html;else toast('请打开第四屏查看结果');
+}
 function renderCockpit(){
   const el=document.getElementById('cockpitBody');
   if(!el)return;
   stopCockpitBoard();
-  const stores=comparisonStores();
-  const tGMV=stores.reduce((s,x)=>s+(+x.gmv||0),0);
+  const stores=comparisonStores().filter(s=>s.status!=='已过期');
+  const t=ckTargets();
+  const econ=ckEcon();
+  const rrates=econ.returnRate||{};
+  const org=econ.organicGmv||{};
+  // 汇总（跨店）
   const tSpend=stores.reduce((s,x)=>s+(+x.spend||0),0);
-  const tROI=tSpend>0?(tGMV/tSpend).toFixed(2):'-';
-  const ranked=[...stores].sort((a,b)=>(b.roi||0)-(a.roi||0));
-  const byGmv=[...stores].sort((a,b)=>(b.gmv||0)-(a.gmv||0));
-  const best=ranked[0],worst=ranked.length>1?ranked[ranked.length-1]:null;
+  const tGMV=stores.reduce((s,x)=>s+(+x.gmv||0),0);
+  const tROI=tSpend>0?+(tGMV/tSpend).toFixed(2):0;
+  const prevSnap=ckPrevSnapshot(7);
+  const prevSpend=prevSnap?prevSnap.stores.reduce((s,x)=>s+x.spend,0):null;
+  const prevGMV=prevSnap?prevSnap.stores.reduce((s,x)=>s+x.gmv,0):null;
+  const prevROI=(prevSnap&&prevSpend>0)?+(prevGMV/prevSpend).toFixed(2):null;
+  try{ckSaveSnapshot(stores);}catch(e){}
+  const ranked=[...stores].sort((a,b)=>(+b.roi||0)-(+a.roi||0));
+  const bottom3=(stores.length>1)?ranked.slice(-3).reverse():[];
+  const marg=ckMarginal(stores);
+  const loss=marg.filter(m=>m.mroi<1);
+  const gain=marg.filter(m=>m.mroi>1.5);
+  const budgetTotal=t.budgetTotal>0?t.budgetTotal:Math.round(tSpend*1.5);
+  const pace=budgetTotal>0?tSpend/budgetTotal*100:0;
+  const paceColor=pace>100?'#ef4444':((pace>85||pace<40)?'#f59e0b':'#10b981');
+  const paceTxt=pace>100?'超额':(pace>85?'偏快':(pace<40?'偏慢':'正常'));
+  const roiColor=tROI>=(t.roiTarget||2)?'#10b981':(tROI>=1.5?'#f59e0b':'#ef4444');
+  // 第三屏数据
+  const trueRows=stores.map(s=>{
+    const rr=+(rrates[s.name]||0);
+    const book=+(+s.roi||0);
+    const real=book*(1-rr/100);
+    const orgG=+(org[s.name]||0);
+    const whole=(+s.spend||0)>0?(((+s.gmv||0)+orgG)/(+s.spend||0)):0;
+    return {name:s.name,book:+book.toFixed(2),real:+real.toFixed(2),rr,whole:+whole.toFixed(2)};
+  }).filter(r=>r.book>0);
+  const hasReturn=Object.keys(rrates).length>0;
+  const risk=trueRows.filter(r=>r.book>0&&(((r.book-r.real)/r.book)*100)>20);
+  const rrHigh=trueRows.filter(r=>r.rr>0&&r.rr>+(t.industryReturn||20));
+  // 第四屏
+  const sugg=[];
+  gain.forEach(g=>sugg.push({act:'加预算',store:g.name,color:'#10b981',text:'边际ROI '+g.mroi+'（'+g.src+'）＞1.5，加预算仍赚钱，建议 +15% 预算'}));
+  loss.forEach(g=>sugg.push({act:'砍预算',store:g.name,color:'#ef4444',text:'边际ROI '+g.mroi+'（'+g.src+'）＜1，再加预算即亏损，建议 -20% 预算并收缩低效计划'}));
+  const alerts=recentAlerts().slice(0,10);
+  const alertAct={'超支预警':'立即检查该店消耗节奏，必要时暂停低效计划','ROI异常':'复核近3天调整动作，考虑回滚出价','排名丢失':'启动排名保卫规则或人工上调核心词出价','授权过期':'重新授权后数据与投放才能恢复','授权临期':'尽快续期，避免投放中断','CTR异常':'建议更换主图/创意，当前点击率异常下滑','CVR异常':'检查详情页与价格竞争力，转化异常下滑'};
   let html='';
-  // 1 多店推广大盘
-  html+=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-table-list"></i> 多店推广大盘（按GMV排列 · ROI排名 · 费比）</div>
-  <div class="mini-stat">${[['店铺数',stores.length],['总花费','¥'+Math.round(tSpend).toLocaleString()],['总GMV','¥'+Math.round(tGMV).toLocaleString()],['综合ROI',tROI]].map(k=>`<div class="kpi-card"><div class="v">${k[1]}</div><div class="l">${k[0]}</div></div>`).join('')}</div>
-  <div class="result-box mb-4"><table class="data-table"><thead><tr><th>ROI排名</th><th>店铺</th><th>花费</th><th>GMV</th><th>ROI</th><th>费比(花费/GMV)</th><th>定位</th></tr></thead><tbody>
-  ${byGmv.map(s=>{const i=ranked.indexOf(s);const isBest=stores.length>1&&i===0;const isWorst=stores.length>1&&i===ranked.length-1;const ratio=(+s.gmv>0)?((+s.spend/s.gmv)*100).toFixed(1)+'%':'-';return `<tr style="background:${isBest?'#ecfdf5':(isWorst?'#fef2f2':'')}"><td>${i+1}</td><td class="text-sm">${s.name}${s.demo?' <span class="badge badge-yellow">演示对比</span>':''}</td><td>¥${Math.round(+s.spend||0).toLocaleString()}</td><td>¥${Math.round(+s.gmv||0).toLocaleString()}</td><td><strong>${s.roi||0}</strong></td><td>${ratio}</td><td>${isBest?'<span class="badge badge-green">标杆</span>':(isWorst?'<span class="badge badge-red">落后</span>':'<span class="badge badge-gray">中位</span>')}</td></tr>`;}).join('')}
-  </tbody></table>${(best&&worst&&stores.length>1)?`<p class="text-sm mt-2"><i class="fa-solid fa-lightbulb text-orange"></i> 标杆店铺 <b class="text-green">${best.name}</b>（ROI ${best.roi}）与落后店铺 <b class="text-red">${worst.name}</b>（ROI ${worst.roi}）差距明显，建议复制标杆的关键词结构/创意模板/预算节奏。</p>`:'<p class="text-xs text-gray mt-2">跨店大盘需≥2家授权店铺才有对比意义；可添加多店铺授权，或在各跨店技能中开启"包含演示店铺对比"。</p>'}</div>`;
-  // 2 大促战报
-  html+=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-tv"></i> 大促战报（实时滚动）</div>
-  <div class="result-box mb-4"><div class="flex gap-3 mb-2 items-center"><div class="toggle on" id="cbToggle" onclick="this.classList.toggle('on')"></div><span class="text-sm">实时更新（每2秒）</span><button class="btn btn-sm btn-secondary" style="margin-left:auto" onclick="openSkill('m10','s56')"><i class="fa-solid fa-expand"></i> 全屏战报大屏</button></div><div id="cbBoard"></div></div>`;
-  // 3 预算总控
-  html+=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-coins"></i> 预算总控（跨店预算池）</div>
-  <div class="result-box mb-4"><div class="flex gap-2 items-center flex-wrap"><label class="text-sm font-bold">预算总池(元)</label><input id="ckBudget" type="number" value="500000" style="width:140px;padding:6px;border:1px solid var(--c-border);border-radius:6px"><button class="btn btn-primary btn-sm" onclick="cockpitBudget()"><i class="fa-solid fa-brain"></i> AI分配（ROI加权）</button><button class="btn btn-secondary btn-sm" onclick="openSkill('m8','s42')">预算智能分配（s42）</button><button class="btn btn-secondary btn-sm" onclick="openSkill('m3','s16')">日预算调整（s16）</button></div><div id="ckBudgetResult" class="mt-3"></div></div>`;
-  // 4 每日推广诊断报告
-  html+=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-file-circle-check"></i> 推广诊断报告（推广侧 · 每日/每周/每月 · 可定时推送钉钉）</div>
-  <div class="result-box mb-4">
-    <div class="flex gap-2 items-center flex-wrap mb-2"><span class="text-sm font-bold">诊断周期：</span><div id="ddPeriodPills" class="flex gap-2">${['day','week','month'].map((p,i)=>`<span class="pill ${i===0?'active':''}" data-period="${p}" onclick="DailyDiag.setPeriod(this)">${{day:'每日',week:'每周',month:'每月'}[p]}</span>`).join('')}</div></div>
-    <div class="flex gap-2 items-center flex-wrap"><button class="btn btn-primary btn-sm" id="ddGenBtn" onclick="DailyDiag.run()"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成报告</button><button class="btn btn-secondary btn-sm" onclick="DailyDiag.openSettings()"><i class="fa-solid fa-paper-plane"></i> 推送设置</button><span id="ddPushState" class="text-xs text-gray"></span></div>
-    <div id="ddPreview" class="mt-3"></div>
-  </div>`;
-  // 5 快速入口
-  html+=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-gauge-simple-high"></i> 数据与策略速览（跨店）</div><div class="tool-grid mb-4">${CK_QUICK.map(wbCard).join('')}</div>`;
+  // 顶部极简工具条
+  html+='<div class="result-box mb-3" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="text-sm font-bold">管理层决策视图</span><span class="text-xs text-gray">只看结果与异常 · 每个数字附带参照物</span><div style="margin-left:auto" class="flex gap-2"><button class="btn btn-sm btn-secondary" onclick="ckOpenSettings()"><i class="fa-solid fa-sliders"></i> 目标与修正设置</button><button class="btn btn-sm btn-secondary" onclick="ckExport()"><i class="fa-solid fa-file-export"></i> 一键导出汇报</button><button class="btn btn-sm btn-secondary" onclick="ckPrint()"><i class="fa-solid fa-print"></i> 打印/PDF</button></div></div>';
+  // ========== 第一屏：全局定调 ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-flag"></i> 第一屏 · 全局定调（5秒判断好坏）</div>';
+  html+='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px" class="mb-4">';
+  html+='<div class="result-box" style="text-align:center;border-top:4px solid '+roiColor+'"><div class="text-xs text-gray">综合ROI（目标 '+(t.roiTarget||2)+'）</div><div style="font-size:40px;font-weight:900;color:'+roiColor+'">'+(tROI||'-')+'</div><div>'+(tROI>=(t.roiTarget||2)?'<span class="badge badge-green">达标</span>':'<span class="badge badge-red">未达标</span>')+' '+ckArrow(tROI,prevROI)+'</div><div class="text-xs text-gray mt-1">上期 '+((prevROI===null)?'待积累':prevROI)+' · 距目标 '+((tROI-(t.roiTarget||2))>=0?'+':'')+(tROI-(t.roiTarget||2)).toFixed(2)+'</div></div>';
+  html+='<div class="result-box" style="text-align:center;border-top:4px solid '+paceColor+'"><div class="text-xs text-gray">总消耗 vs 总预算（花的节奏对不对）</div><div class="progress mt-2" style="height:16px"><div class="progress-bar" style="width:'+Math.min(100,Math.max(0,pace))+'%;background:'+paceColor+'"></div></div><div class="mt-2"><span class="badge" style="background:'+paceColor+';color:#fff">节奏：'+paceTxt+'</span> <span class="text-xs text-gray">'+pace.toFixed(0)+'%</span></div><div class="text-xs text-gray mt-1">消耗 ¥'+Math.round(tSpend).toLocaleString()+' / 预算 ¥'+Math.round(budgetTotal).toLocaleString()+'</div></div>';
+  html+='<div class="result-box" style="text-align:center;border-top:4px solid #667eea"><div class="text-xs text-gray">总广告成交额（看方向不看定点）</div><div style="font-size:30px;font-weight:900;color:#667eea">¥'+Math.round(tGMV).toLocaleString()+'</div><div>'+ckArrow(tGMV,prevGMV)+'</div><div id="ckTrend">趋势加载中...</div></div>';
+  html+='</div>';
+  // ========== 第二屏：抓拖后腿 ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-user-ninja"></i> 第二屏 · 抓拖后腿（只给最差的）</div>';
+  html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px" class="mb-2">';
+  html+='<div class="result-box"><div class="text-sm font-bold mb-2">ROI倒数三名（红色=需介入）</div>'+(bottom3.length?bottom3.map((s,i)=>'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--c-border)"><span class="text-sm">'+(i+1)+'. '+s.name+'</span><span><b style="color:#ef4444">ROI '+(s.roi||0)+'</b> <span class="text-xs text-gray">花费¥'+Math.round(+s.spend||0).toLocaleString()+'</span></span></div>').join(''):'<p class="text-xs text-gray">需≥2家店铺才有排名</p>')+'</div>';
+  html+='<div class="result-box"><div class="text-sm font-bold mb-2">边际ROI＜1（再加钱就是亏）</div>'+(loss.length?loss.map(m=>'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--c-border)"><span class="text-sm">'+m.name+'</span><span><b style="color:#ef4444">边际ROI '+m.mroi+'</b> <span class="text-xs text-gray">'+m.src+'</span></span></div>').join(''):'<p class="text-xs text-green">无——所有店铺加预算仍有正收益</p>')+'</div>';
+  html+='</div>';
+  html+='<div class="result-box mb-2"><div class="text-sm font-bold mb-1">消耗占比 vs 成交占比偏差（预算错配一眼识别）</div>'+ckScatter(stores)+'</div>';
+  html+='<div class="result-box mb-4"><div class="text-sm font-bold mb-1">店铺健康矩阵 + 渠道ROI</div>'+ckMatrix(stores,marg)+'</div>';
+  // ========== 第三屏：戳破泡沫 ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-magnifying-glass-dollar"></i> 第三屏 · 戳破泡沫（账面利润是真的吗）</div>';
+  html+='<div class="result-box mb-2"><div class="text-sm font-bold mb-1">账面ROI vs 剔除退货真实ROI</div>';
+  if(!hasReturn){
+    html+='<p class="text-xs text-gray">尚未录入各店退货率 → <button class="btn btn-sm btn-primary" onclick="ckOpenSettings()">去录入</button>（录入后自动计算真实ROI；差值>20%自动标红预警）</p>';
+  }else{
+    html+='<table class="data-table"><thead><tr><th>店铺</th><th>账面ROI</th><th>真实ROI(剔退)</th><th>差值</th><th>全店ROI(含自然)</th><th>判定</th></tr></thead><tbody>';
+    trueRows.forEach(r=>{
+      const gap=r.book>0?((r.book-r.real)/r.book*100):0;
+      html+='<tr><td class="text-sm">'+r.name+'</td><td>'+r.book+'</td><td>'+r.real+'</td><td>'+(gap>20?'<b style="color:#ef4444">↓'+gap.toFixed(0)+'%</b>':'<span class="text-gray">↓'+gap.toFixed(0)+'%</span>')+'</td><td>'+(r.whole||'-')+'</td><td>'+(gap>20?'<span class="badge badge-red">泡沫风险</span>':(gap>10?'<span class="badge badge-yellow">关注</span>':'<span class="badge badge-green">健康</span>'))+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    if(risk.length)html+='<p class="text-sm mt-2" style="color:#ef4444"><i class="fa-solid fa-triangle-exclamation"></i> '+risk.map(r=>r.name).join('、')+' 真实ROI较账面下降超20%，存在虚假达标风险，加预算前请复核退货/退款数据。</p>';
+    html+=ckCompareBars(trueRows);
+  }
+  html+='</div>';
+  html+='<div class="result-box mb-4"><div class="text-sm font-bold mb-1">退货率高于行业均值（'+(t.industryReturn||20)+'%）的店铺</div>'+(rrHigh.length?rrHigh.map(r=>'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--c-border)"><span class="text-sm">'+r.name+'</span><span><b style="color:#ef4444">退货率 '+r.rr+'%</b> <span class="text-xs text-gray">高于行业'+((r.rr-(t.industryReturn||20))).toFixed(1)+'个点</span></span></div>').join(''):'<p class="text-xs text-gray">'+(hasReturn?'无店铺高于行业均值':'尚未录入退货率')+'</p>')+'</div>';
+  // ========== 第四屏：明天怎么办 ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-list-check"></i> 第四屏 · 明天怎么办（预算建议 + 预警待办）</div>';
+  html+='<div class="result-box mb-2"><div class="text-sm font-bold mb-2">预算调整建议（依据边际ROI自动计算，直接给金额/比例）</div>';
+  html+=sugg.length?sugg.map(s=>'<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--c-border)"><span class="text-sm"><span class="badge" style="background:'+s.color+';color:#fff">'+s.act+'</span> '+s.text+'</span><button class="btn btn-sm btn-secondary" onclick="ckGotoStore(\''+s.store+'\')">处理</button></div>').join(''):'<p class="text-xs text-gray">暂无建议（需真实店铺数据）</p>';
+  html+='<div class="flex gap-2 mt-2"><button class="btn btn-sm btn-primary" onclick="cockpitApplyBudget()"><i class="fa-solid fa-wand-magic-sparkles"></i> 一键生成分配方案</button></div><div id="ckBudgetResult2" class="mt-2"></div></div>';
+  html+='<div class="result-box mb-4"><div class="text-sm font-bold mb-2">异常预警待办（每条附行动建议 → 可转发负责人）</div>';
+  html+=alerts.length?alerts.map(a=>'<div style="padding:7px 0;border-bottom:1px solid var(--c-border)"><div class="text-sm"><span style="color:'+(a.level==='bad'?'#ef4444':'#f59e0b')+';font-weight:700">'+(a.level==='bad'?'🔴':'🟡')+' '+a.kind+'</span> · '+a.store+'</div><div class="text-xs text-gray" style="padding-left:8px">'+a.text+'</div><div class="text-xs" style="padding-left:8px;color:#0f766e">▶ 建议：'+(alertAct[a.kind]||'复核该店推广数据并按规则引擎建议处理')+'</div></div>').join(''):'<p class="text-sm text-green">暂无预警</p>';
+  html+='<div class="flex gap-2 mt-2"><button class="btn btn-sm btn-secondary" onclick="ckExport()"><i class="fa-solid fa-copy"></i> 复制待办清单</button><button class="btn btn-sm btn-secondary" onclick="ckPrint()"><i class="fa-solid fa-print"></i> 导出PDF</button><button class="btn btn-sm btn-secondary" onclick="ckOpenSettings()"><i class="fa-solid fa-sliders"></i> 录入修正数据</button></div></div>';
+  // ========== 诊断报告（保留原功能） ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-file-circle-check"></i> 推广诊断报告（每日/每周/每月 · 可定时推送钉钉）</div>';
+  html+='<div class="result-box mb-4"><div class="flex gap-2 items-center flex-wrap mb-2"><span class="text-sm font-bold">诊断周期：</span><div id="ddPeriodPills" class="flex gap-2">'+['day','week','month'].map((p,i)=>'<span class="pill '+(i===0?'active':'')+'" data-period="'+p+'" onclick="DailyDiag.setPeriod(this)">'+({day:'每日',week:'每周',month:'每月'}[p])+'</span>').join('')+'</div></div><div class="flex gap-2 items-center flex-wrap"><button class="btn btn-primary btn-sm" id="ddGenBtn" onclick="DailyDiag.run()"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成报告</button><button class="btn btn-secondary btn-sm" onclick="DailyDiag.openSettings()"><i class="fa-solid fa-paper-plane"></i> 推送设置</button><span id="ddPushState" class="text-xs text-gray"></span></div><div id="ddPreview" class="mt-3"></div></div>';
+  // ========== 策略速览（保留） ==========
+  html+='<div class="section-title" style="font-size:15px"><i class="fa-solid fa-gauge-simple-high"></i> 数据与策略速览（跨店）</div><div class="tool-grid mb-4">'+CK_QUICK.map(wbCard).join('')+'</div>';
   el.innerHTML=html;
-  startCockpitBoard({gmv:tGMV*2,spend:tSpend*2});
+  ckLoadTrend();
   try{DailyDiag.renderState();}catch(e){}
 }
+
 function startCockpitBoard(base){
   cockpitLive={gmv:Math.round((base&&base.gmv)||0),spend:Math.round((base&&base.spend)||0),orders:Math.round(((base&&base.gmv)||0)/260)};
   cockpitBoardRender();
