@@ -345,7 +345,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V31</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V32</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -784,48 +784,65 @@ const DataAdapter={
     }
     if(this.mode==='real'){
       try{
-        // 万相台计划报表（当前应用权限仅开放charge花费字段；点击/展现等指标需补申请权限或Excel导入）
-        // 遍历全部营销场景聚合花费，与万相台后台"全部营销场景"口径对齐
-        const start=(startDate||new Date(Date.now()-7*86400000).toISOString().slice(0,10));
-        const end=(endDate||new Date().toISOString().slice(0,10));
+        // V32: 逐日拉取万相台计划报表（每天一次查询，日期精确到日）
+        // 修正：此前整段区间汇总数据被统一标记为结束日期，导致"今日"显示的是整段区间总量
+        const start=(startDate||fmtD(new Date(Date.now()-6*86400000)));
+        const end=(endDate||fmtD(new Date()));
         const rows=[];
         let sceneOk=0,sceneTotal=0;
-        for(const scene of SCENE_CODES){
-          try{
-            // 关键修复：query_field_in_list必须用数组格式（逗号字符串会触发"所有字段均无查询权限"误导报错）
-            // 响应字段为下划线格式：ad_pv/click/charge/alipay_inshop_amt/gmv_inshop_amt/cvr/roi
-            const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
-              top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'campaign',query_field_in_list:['adPv','click','charge','alipayInshopAmt','gmvInshopAmt','cvr','roi'],offset:0,page_size:50})
-            },scene);
-            const err=this.upstreamError(d);
-            if(!err&&d.status==='ok'){
-              sceneOk++;
-              const list=this.extractList(d.response);
-              list.forEach(r=>{
-                const ri=r.report_index||{};
-                const c=+(ri.charge)||0;
-                const clicks=+(ri.click)||0;
-                const imp=+(ri.ad_pv||ri.adPv)||0;
-                const gmv=+(ri.alipay_inshop_amt||ri.alipayInshopAmt)||0;
-                const roi=+(ri.roi)||0;
-                const cvr=+(ri.cvr)||0;
-                if(c>0||clicks>0||r.campaign_name){
-                  sceneTotal+=c;
-                  rows.push({
-                    date:end,store:currentStore()||'',campaign:r.campaign_name||'',
-                    cost:c,gmv,roi,ctr:imp>0?+(clicks/imp*100).toFixed(2):0,cvr:cvr?+(cvr*100).toFixed(2):0,clicks,impressions:imp,
-                    item:r.promotion_name||'',scene:SCENE_NAMES[scene]||scene
+        const d0=new Date(start+'T00:00:00'),d1=new Date(end+'T00:00:00');
+        if(!isNaN(d0.getTime())&&!isNaN(d1.getTime())&&d0.getTime()<=d1.getTime()){
+          for(let t=d0.getTime();t<=d1.getTime();t+=86400000){
+            const day=fmtD(new Date(t));
+            let dayCvrW=0,dayClicks=0;
+            for(const scene of SCENE_CODES){
+              try{
+                // 关键：query_field_in_list必须用数组格式；响应字段为下划线格式
+                const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
+                  top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:day,end_time:day,effect_equal:15,query_domains:'campaign',query_field_in_list:['adPv','click','charge','alipayInshopAmt','gmvInshopAmt','cvr','roi'],offset:0,page_size:50})
+                },scene);
+                const err=this.upstreamError(d);
+                if(!err&&d.status==='ok'){
+                  sceneOk++;
+                  const list=this.extractList(d.response);
+                  list.forEach(r=>{
+                    const ri=r.report_index||{};
+                    const c=+(ri.charge)||0;
+                    const clicks=+(ri.click)||0;
+                    const imp=+(ri.ad_pv||ri.adPv)||0;
+                    const gmv=+(ri.alipay_inshop_amt||ri.alipayInshopAmt)||0;
+                    const roi=+(ri.roi)||0;
+                    const cvr=+(ri.cvr)||0;
+                    if(c>0||clicks>0||r.campaign_name){
+                      sceneTotal+=c;
+                      dayCvrW+=cvr*clicks;dayClicks+=clicks;
+                      rows.push({
+                        date:day,store:currentStore()||'',campaign:r.campaign_name||'',
+                        cost:c,gmv,roi,ctr:imp>0?+(clicks/imp*100).toFixed(2):0,cvr:cvr?+(cvr*100).toFixed(2):0,clicks,impressions:imp,
+                        item:r.promotion_name||'',scene:SCENE_NAMES[scene]||scene
+                      });
+                    }
                   });
                 }
-              });
+              }catch(e){}
+              await new Promise(rs=>setTimeout(rs,40)); // 轻微节流保护代理
             }
-          }catch(e){}
+            // 逐日汇总缓存（供数据总览按日取数）
+            const dr=rows.filter(r=>r.date===day);
+            this.realDaily[day]={
+              cost:+(dr.reduce((s,r)=>s+(+r.cost||0),0)).toFixed(2),
+              gmv:+(dr.reduce((s,r)=>s+(+r.gmv||0),0)).toFixed(2),
+              clicks:dr.reduce((s,r)=>s+(+r.clicks||0),0),
+              imp:dr.reduce((s,r)=>s+(+r.impressions||0),0),
+              cvr:dayClicks>0?+(dayCvrW/dayClicks*100).toFixed(2):0
+            };
+          }
         }
         if(sceneOk>0){
-          this.apiStatus.reports='已连接('+sceneOk+'场景·全指标)';
+          this.apiStatus.reports='已连接('+sceneOk+'场景·逐日)';
           const summary=this.summarize(rows);
           summary.spend=Math.round(sceneTotal*100)/100;
-          summary.note='已聚合'+sceneOk+'个营销场景全指标（展现/点击/花费/GMV/ROI/CVR均为万相台真实数据）';
+          summary.note='已逐日聚合'+sceneOk+'个场景调用（数据按日精确归属，今日实时口径以实时报表为准）';
           return {live:true,rows,summary,real:true};
         }
         this.apiStatus.reports='未授权接口';
@@ -836,6 +853,37 @@ const DataAdapter={
     this.apiStatus.reports='演示数据';
     const rows=this.seedReports();
     return {live:false,rows,summary:this.summarize(rows)};
+  },
+  // V32: 按需补拉指定日期区间的逐日汇总（近30天/自定义周期用），已缓存日期自动跳过
+  async fetchDailyReports(start,end){
+    if(this.mode!=='real')return;
+    if(!this.realDaily)this.realDaily={};
+    const d0=new Date(start+'T00:00:00'),d1=new Date(end+'T00:00:00');
+    if(isNaN(d0.getTime())||isNaN(d1.getTime())||d0.getTime()>d1.getTime())return;
+    for(let t=d0.getTime();t<=d1.getTime();t+=86400000){
+      const day=fmtD(new Date(t));
+      if(this.realDaily[day])continue;
+      let cost=0,gmv=0,clicks=0,imp=0,cvrW=0;
+      for(const scene of SCENE_CODES){
+        try{
+          const d=await this.proxy('taobao.universalbp.new.report.query.campaign',{
+            top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:day,end_time:day,effect_equal:15,query_domains:'campaign',query_field_in_list:['adPv','click','charge','alipayInshopAmt','gmvInshopAmt','cvr','roi'],offset:0,page_size:50})
+          },scene);
+          const err=this.upstreamError(d);
+          if(!err&&d.status==='ok'){
+            this.extractList(d.response).forEach(r=>{
+              const ri=r.report_index||{};
+              const c=+(ri.charge)||0,ck=+(ri.click)||0;
+              cost+=c;gmv+=+(ri.alipay_inshop_amt||ri.alipayInshopAmt)||0;
+              clicks+=ck;imp+=+(ri.ad_pv||ri.adPv)||0;
+              cvrW+=(+(ri.cvr)||0)*ck;
+            });
+          }
+        }catch(e){}
+        await new Promise(rs=>setTimeout(rs,40));
+      }
+      this.realDaily[day]={cost:+cost.toFixed(2),gmv:+gmv.toFixed(2),clicks,imp,cvr:clicks>0?+(cvrW/clicks*100).toFixed(2):0};
+    }
   },
   // 万相台真实创意数据 → 统一格式
   mapCreatives(list){
@@ -1044,7 +1092,7 @@ const DataAdapter={
     const out=[];
     const st={name:name,roi:0,gmv:0,spend:0,ctr:0,cvr:0,real:true};
     const cache={spend:0,gmv:0,roi:0,ctr:0,cvr:0,campaignCount:0,creativeCount:0,ts:Date.now()};
-    this.realCampaigns=[];this.realCreatives=[];this.realReports=[];
+    this.realCampaigns=[];this.realCreatives=[];this.realReports=[];this.realDaily={};
     // 淘宝侧服务波动检测：全部拉取为0时定时自动重试（hsf异常/限流自愈后自动恢复数据）
     const gotAnyData=()=>{
       return (this.realCampaigns&&this.realCampaigns.length)||(this.realReports&&this.realReports.length)||(cache.todaySpend>0);
@@ -1101,7 +1149,8 @@ const DataAdapter={
               const clicks=+(ri.click)||0;
               const imp=+(ri.ad_pv||ri.adPv)||0;
               const roi=+(ri.roi)||0;
-              if(c>0||clicks>0){rtTotal+=c;rtRows.push({campaign:r.campaign_name||'',cost:c,gmv,clicks,impressions:imp,roi,scene:(r.scene1_name||SCENE_NAMES[scene]||scene)});}
+              const cvr=+(ri.cvr)||0;
+              if(c>0||clicks>0){rtTotal+=c;rtRows.push({campaign:r.campaign_name||'',cost:c,gmv,clicks,impressions:imp,roi,cvr,scene:(r.scene1_name||SCENE_NAMES[scene]||scene)});}
             });
           }
         }catch(e){}
@@ -3274,7 +3323,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V31</td></tr>
+          <tr><td>平台版本</td><td>V32</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -3769,11 +3818,41 @@ function collectReportRows(start,end){
     });
   }catch(e){}
   try{
-    (DataAdapter.realReports||[]).forEach(r=>{
-      const ds=String(r.date||'').slice(0,10);
-      if(!inR(ds))return;
-      rows.push({date:ds||start,store:r.store||currentStore()||'',cost:+r.cost||0,gmv:+r.gmv||0,clicks:+r.clicks||0,imp:+r.impressions||0,cvr:+r.cvr||0});
-    });
+    if(DataAdapter.mode==='real'){
+      // V32: 真实模式按日取数（realDaily逐日缓存），今日优先用实时报表口径（与万相台后台实时页一致）
+      const rd=DataAdapter.realDaily||{};
+      const today=fmtD(new Date());
+      const t0=new Date(start+'T00:00:00'),t1=new Date(end+'T00:00:00');
+      if(!isNaN(t0.getTime())&&!isNaN(t1.getTime())){
+        const missing=[];
+        for(let t=t0.getTime();t<=t1.getTime();t+=86400000){
+          const day=fmtD(new Date(t));
+          if(day===today&&(DataAdapter.realRealtime||[]).length){
+            const rt=DataAdapter.realRealtime;
+            const cost=rt.reduce((s,r)=>s+(+r.cost||0),0);
+            const clicks=rt.reduce((s,r)=>s+(+r.clicks||0),0);
+            if(cost>0||clicks>0){
+              rows.push({date:day,store:currentStore()||'',cost:+cost.toFixed(2),gmv:+rt.reduce((s,r)=>s+(+r.gmv||0),0).toFixed(2),clicks,imp:rt.reduce((s,r)=>s+(+r.impressions||0),0),cvr:clicks>0?+(rt.reduce((s,r)=>s+(+r.cvr||0)*(+r.clicks||0),0)/clicks*100).toFixed(2):0});
+              continue;
+            }
+          }
+          const d=rd[day];
+          if(d&&(d.cost>0||d.clicks>0)){
+            rows.push({date:day,store:currentStore()||'',cost:+d.cost||0,gmv:+d.gmv||0,clicks:+d.clicks||0,imp:+d.imp||0,cvr:+d.cvr||0});
+          }else if(day!==today){
+            missing.push(day); // 今日由实时报表兜底，不计缺失
+          }
+        }
+        // 超出已缓存区间（近30天/自定义）→ 异步补拉后自动重渲染
+        if(missing.length&&!DataAdapter._dailyFetching){
+          DataAdapter._dailyFetching=true;
+          DataAdapter.fetchDailyReports(start,end).then(()=>{
+            DataAdapter._dailyFetching=false;
+            try{renderDashboard();}catch(e){}
+          }).catch(()=>{DataAdapter._dailyFetching=false;});
+        }
+      }
+    }
   }catch(e){}
   if(!rows.length&&DataAdapter.mode!=='real')return demoRowsInRange(start,end);
   return rows;
@@ -3912,7 +3991,7 @@ function renderDashboard(){
     const presets=[['today','今日'],['yesterday','昨日'],['d7','近7天'],['d30','近30天'],['custom','自定义']];
     tb.innerHTML=presets.map(pr=>`<span class="pill ${DASH.preset===pr[0]?'active':''}" onclick="dashSetPreset('${pr[0]}')">${pr[1]}</span>`).join('')
       +(DASH.preset==='custom'?` <input type="date" id="dashStart" value="${DASH.start}" style="padding:4px 8px;border:1px solid var(--c-border);border-radius:6px;font-size:12px"><span class="text-xs text-gray">至</span><input type="date" id="dashEnd" value="${DASH.end}" style="padding:4px 8px;border:1px solid var(--c-border);border-radius:6px;font-size:12px"><button class="btn btn-sm btn-primary" onclick="dashApplyCustom()">应用</button>`:'')+
-      `<span class="badge badge-gray" style="margin-left:auto">统计周期：${DASH.start} ~ ${DASH.end}</span>`;
+      `<span class="badge badge-gray" style="margin-left:auto">统计周期：${DASH.start} ~ ${DASH.end}${DataAdapter._dailyFetching?' · 正在补拉历史数据，稍后自动刷新...':''}</span>`;
   }
   const rows=collectReportRows(DASH.start,DASH.end);
   const m=aggRows(rows);
