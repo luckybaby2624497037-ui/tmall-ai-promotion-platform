@@ -345,7 +345,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V33</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V34</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -798,8 +798,23 @@ const DataAdapter={
       return {live:true,rows,summary:this.summarize(rows),imported:true};
     }
     if(this.mode==='real'){
-      try{
-        // V33: 每场景1次区间查询（共9次调用）+限流自动重试——V32逐日循环(63次调用)触发ck限流导致被限流查询静默返回0、总花费严重偏低
+      // V34: 单飞复用——同一区间并发调用共享一次请求，避免刷新+总览+补拉三路并发打爆ck限流
+      const fs_start=(startDate||fmtD(new Date(Date.now()-6*86400000)));
+      const fs_end=(endDate||fmtD(new Date()));
+      const flyKey='rpt_'+fs_start+'~'+fs_end;
+      if(this._inflight&&this._inflight.key===flyKey){return await this._inflight.promise;}
+      const flyPromise=this._doFetchRangeReports(startDate,endDate);
+      this._inflight={key:flyKey,promise:flyPromise};
+      try{return await flyPromise;}finally{if(this._inflight&&this._inflight.key===flyKey)this._inflight=null;}
+    }
+    this.apiStatus.reports='演示数据';
+    const rows=this.seedReports();
+    return {live:false,rows,summary:this.summarize(rows)};
+  },
+  // V34: fetchReports真实模式实现（被单飞包装）
+  async _doFetchRangeReports(startDate,endDate){
+    try{
+        // V33: 每场景1次区间查询（共9次调用）+限流自动重试
         const start=(startDate||fmtD(new Date(Date.now()-6*86400000)));
         let end=(endDate||fmtD(new Date()));
         const today=fmtD(new Date());
@@ -820,7 +835,7 @@ const DataAdapter={
                 top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:start,end_time:end,effect_equal:15,query_domains:'campaign',query_field_in_list:['adPv','click','charge','alipayInshopAmt','gmvInshopAmt','cvr','roi'],offset:0,page_size:100})
               },scene);
               const err=this.upstreamError(d);
-              if(err&&String(err).indexOf('限流')>=0){await new Promise(rs=>setTimeout(rs,90000));continue;} // 限流：等90秒重试
+              if(err&&String(err).indexOf('限流')>=0){await new Promise(rs=>setTimeout(rs,45000));continue;} // 限流：等45秒重试（V34: 90秒太长拖慢首屏）
               done=true;
               if(!err&&d.status==='ok'){
                 sceneOk++;
@@ -852,21 +867,23 @@ const DataAdapter={
           const summary=this.summarize(rows);
           summary.spend=Math.round(sceneTotal*100)/100;
           summary.note='每场景1次区间查询（限流自动重试），今日为实时口径';
+          // V34: 同步填充区间KPI缓存（refreshRealData拉完后renderDashboard直接命中，无需二次请求）
+          if(!this._rangeCache)this._rangeCache={};
+          this._rangeCache[start+'~'+(addToday?fmtD(new Date()):end)]={spend:summary.spend,gmv:summary.gmv,clicks:summary.clicks,impressions:summary.impressions,ctr:summary.ctr,cvr:summary.cvr,roi:summary.roi,ts:Date.now()};
           return {live:true,rows,summary,real:true};
         }
         this.apiStatus.reports='未授权接口';
       }catch(e){this.apiStatus.reports='连接失败';}
       const rows=this.seedReports();
       return {live:false,rows,summary:this.summarize(rows)};
-    }
-    this.apiStatus.reports='演示数据';
-    const rows=this.seedReports();
-    return {live:false,rows,summary:this.summarize(rows)};
   },
   // V32: 按需补拉指定日期区间的逐日汇总（近30天/自定义周期用），已缓存日期自动跳过
   async fetchDailyReports(start,end){
     if(this.mode!=='real')return;
     if(!this.realDaily)this.realDaily={};
+    // V34: 串行化——等在飞的区间报表请求结束再补拉，避免并发触发ck限流
+    let guard=0;
+    while(this._inflight&&guard<40){await new Promise(rs=>setTimeout(rs,3000));guard++;}
     const d0=new Date(start+'T00:00:00'),d1=new Date(end+'T00:00:00');
     if(isNaN(d0.getTime())||isNaN(d1.getTime())||d0.getTime()>d1.getTime())return;
     for(let t=d0.getTime();t<=d1.getTime();t+=86400000){
@@ -899,7 +916,29 @@ const DataAdapter={
         await new Promise(rs=>setTimeout(rs,1500)); // V33: 场景间1.5秒节流，防止触发ck限流
       }
       this.realDaily[day]={cost:+cost.toFixed(2),gmv:+gmv.toFixed(2),clicks,imp,cvr:clicks>0?+(cvrW/clicks*100).toFixed(2):0};
+      // V34: 逐日缓存持久化到localStorage——刷新页面不重拉历史（历史数据稳定），大幅减少API调用量
+      try{LS.set('real_daily_cache_'+currentStore(),this.realDaily);}catch(e){}
     }
+  },
+  // V34: 启动时从localStorage恢复持久缓存（realDaily/区间KPI）
+  restorePersistedCaches(){
+    try{
+      const store=currentStore();
+      if(!store)return;
+      const daily=LS.get('real_daily_cache_'+store,null);
+      if(daily&&typeof daily==='object'){
+        this.realDaily=Object.assign(this.realDaily||{},daily);
+        // 剔除超过45天的旧缓存
+        const cut=Date.now()-45*86400000;
+        Object.keys(this.realDaily).forEach(d=>{if(new Date(d+'T00:00:00').getTime()<cut)delete this.realDaily[d];});
+      }
+      const rc=LS.get('range_kpi_cache_'+store,null);
+      if(rc&&typeof rc==='object'){
+        this._rangeCache=Object.assign(this._rangeCache||{},rc);
+        // 剔除超过10分钟的过期项（防止陈旧数据长期展示）
+        Object.keys(this._rangeCache).forEach(k=>{const v=this._rangeCache[k];if(!v||!v.ts||Date.now()-v.ts>10*60*1000)delete this._rangeCache[k];});
+      }
+    }catch(e){}
   },
   // V33: 区间汇总KPI（每场景1次区间查询，结果缓存10分钟）——数据总览核心指标用此口径，与万相台后台区间一致
   async fetchRangeSummary(start,end){
@@ -913,6 +952,8 @@ const DataAdapter={
     const s=rep.summary;
     const out={spend:s.spend,gmv:s.gmv,clicks:s.clicks,impressions:s.impressions,ctr:s.ctr,cvr:s.cvr,roi:s.roi,ts:Date.now()};
     this._rangeCache[key]=out;
+    // V34: 区间KPI缓存持久化（非"今日"区间）——刷新页面10分钟内直接命中不再拉取
+    try{if(end!==fmtD(new Date()))LS.set('range_kpi_cache_'+currentStore(),this._rangeCache);}catch(e){}
     return out;
   },
   // 万相台真实创意数据 → 统一格式
@@ -3353,7 +3394,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V33</td></tr>
+          <tr><td>平台版本</td><td>V34</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -4058,7 +4099,10 @@ function renderDashboard(){
   const promoCards=loadingKpi
     ?[['花费','<i class="fa-solid fa-spinner fa-spin"></i>','#94a3b8'],['展现','-','#94a3b8'],['点击','-','#94a3b8'],['CTR','-','#94a3b8'],['CVR','-','#94a3b8'],['ROI','-','#94a3b8'],['GMV','-','#94a3b8']]
     :[['花费',money(m.spend),'#ef4444'],['展现',num(m.impressions),'#3b82f6'],['点击',num(m.clicks),'#667eea'],['CTR',(m.ctr||0)+'%','#10b981'],['CVR',(m.cvr||0)+'%','#8b5cf6'],['ROI',m.roi||'-','#f59e0b'],['GMV',money(m.gmv),'#14b8a6']];
-  let html=`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-bullhorn"></i> 推广端核心指标 <span class="text-xs text-gray">（${DASH.label} · 跨店聚合）</span></div>
+  let html=loadingKpi
+    ?`<div class="result-box mb-3" style="background:#eff6ff;border:1px solid #bfdbfe"><p class="text-sm" style="color:#1d4ed8"><i class="fa-solid fa-spinner fa-spin"></i> 正在从万相台拉取${DASH.label}数据（上游接口有调用频率保护，首次约需1~5分钟；完成后自动显示，期间可先浏览其他页面）。</p></div><div class="section-title" style="font-size:15px"><i class="fa-solid fa-bullhorn"></i> 推广端核心指标 <span class="text-xs text-gray">（${DASH.label} · 跨店聚合）</span></div>
+  <div class="mini-stat">${promoCards.map(c=>`<div class="kpi-card"><div class="v" style="color:${c[2]};font-size:19px">${c[1]}</div><div class="l">${c[0]}</div></div>`).join('')}</div>`
+    :`<div class="section-title" style="font-size:15px"><i class="fa-solid fa-bullhorn"></i> 推广端核心指标 <span class="text-xs text-gray">（${DASH.label} · 跨店聚合）</span></div>
   <div class="mini-stat">${promoCards.map(c=>`<div class="kpi-card"><div class="v" style="color:${c[2]};font-size:19px">${c[1]}</div><div class="l">${c[0]}</div></div>`).join('')}</div>`;
   // 店铺端指标
   const side=storeSideAgg();
@@ -4892,6 +4936,7 @@ function quickToggleWb(){
   try{DailyDiag.syncToServer();}catch(e){}
   // 真实模式：启动时拉取当前店铺的真实指标（报表/计划/创意），到位后自动刷新总览
   if(typeof DataAdapter!=='undefined'&&DataAdapter.mode==='real'){
+    try{DataAdapter.restorePersistedCaches();}catch(e){} // V34: 先恢复本地持久缓存，历史数据秒出
     DataAdapter.refreshRealData().catch(()=>{});
   }
 })();
