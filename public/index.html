@@ -345,7 +345,7 @@ body{font-family:'Noto Sans SC',sans-serif;background:var(--c-bg);color:var(--c-
 <body>
 <!-- Top Navigation -->
 <div class="topbar">
-  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V34</span></div>
+  <div class="logo"><i class="fa-solid fa-robot"></i> 天猫推广自动化平台 <span id="appVer" style="font-size:10px;opacity:.55;font-weight:400">V35</span></div>
   <div class="tabs">
     <div class="tab active" data-tab="ov">数据总览</div>
     <div class="tab" data-tab="cockpit">决策驾驶舱</div>
@@ -814,12 +814,13 @@ const DataAdapter={
   // V34: fetchReports真实模式实现（被单飞包装）
   async _doFetchRangeReports(startDate,endDate){
     try{
-        // V33: 每场景1次区间查询（共9次调用）+限流自动重试
-        const start=(startDate||fmtD(new Date(Date.now()-6*86400000)));
-        let end=(endDate||fmtD(new Date()));
+        // V35: 默认区间与万相台后台口径一致——昨日往前7天（不含今日）；显式传今日才并入实时口径
         const today=fmtD(new Date());
+        const yest=fmtD(new Date(Date.now()-86400000));
+        const start=(startDate||fmtD(new Date(Date.now()-7*86400000)));
+        let end=(endDate||yest);
         let addToday=false;
-        if(end===today){end=fmtD(new Date(Date.now()-86400000));addToday=true;} // 今日并入实时口径
+        if(end===today){end=yest;addToday=true;} // 显式包含今日的自定义区间：今日部分并入实时口径
         const rows=[];
         let sceneOk=0,sceneTotal=0;
         if(addToday&&(this.realRealtime||[]).length){
@@ -892,7 +893,16 @@ const DataAdapter={
       let cost=0,gmv=0,clicks=0,imp=0,cvrW=0;
       const today=fmtD(new Date());
       if(day===today)continue; // 今日由实时报表口径提供，不做逐日报表查询
-      for(const scene of SCENE_CODES){
+      // V35: 只查在投场景（从计划列表推导），未投场景必然无数据——调用量从9次/天降到实际数
+      let scenes=SCENE_CODES;
+      try{
+        if(this.realCampaigns&&this.realCampaigns.length){
+          const used=new Set();
+          this.realCampaigns.forEach(x=>{const cn=x['投放渠道']||x['场景']||'';for(const code of SCENE_CODES){if(SCENE_NAMES[code]===cn){used.add(code);break;}}});
+          if(used.size)scenes=[...used];
+        }
+      }catch(e){}
+      for(const scene of scenes){
         let got=false;
         for(let att=0;att<2&&!got;att++){
           try{
@@ -900,7 +910,7 @@ const DataAdapter={
               top_campaign_report_query_v_o:JSON.stringify({by_page:true,split_type:'sum',unify_type:'zhai',start_time:day,end_time:day,effect_equal:15,query_domains:'campaign',query_field_in_list:['adPv','click','charge','alipayInshopAmt','gmvInshopAmt','cvr','roi'],offset:0,page_size:100})
             },scene);
             const err=this.upstreamError(d);
-            if(err&&String(err).indexOf('限流')>=0){await new Promise(rs=>setTimeout(rs,90000));continue;} // 限流退避
+            if(err&&String(err).indexOf('限流')>=0){await new Promise(rs=>setTimeout(rs,45000));continue;} // 限流退避
             got=true;
             if(!err&&d.status==='ok'){
               this.extractList(d.response).forEach(r=>{
@@ -913,7 +923,7 @@ const DataAdapter={
             }
           }catch(e){got=true;}
         }
-        await new Promise(rs=>setTimeout(rs,1500)); // V33: 场景间1.5秒节流，防止触发ck限流
+        await new Promise(rs=>setTimeout(rs,800)); // V35: 场景间0.8秒节流
       }
       this.realDaily[day]={cost:+cost.toFixed(2),gmv:+gmv.toFixed(2),clicks,imp,cvr:clicks>0?+(cvrW/clicks*100).toFixed(2):0};
       // V34: 逐日缓存持久化到localStorage——刷新页面不重拉历史（历史数据稳定），大幅减少API调用量
@@ -3394,7 +3404,7 @@ const AuthUI={
     openModal('数据流自诊断','<i class="fa-solid fa-stethoscope"></i>','#06b6d4',`
       <div class="result-box mb-3"><h4 class="mb-2">环境状态</h4>
         <table class="data-table"><tbody>
-          <tr><td>平台版本</td><td>V34</td></tr>
+          <tr><td>平台版本</td><td>V35</td></tr>
           <tr><td>页面地址</td><td><code>${location.href}</code></td></tr>
           <tr><td>运行模式</td><td>${DataAdapter.mode==='real'?'<span class="badge badge-green">real（真实数据）</span>':'<span class="badge badge-yellow">demo（演示）</span>'}</td></tr>
           <tr><td>已授权店铺</td><td>${my.length}家（${my.map(s=>s.shopName).join('、')||'无'}）</td></tr>
@@ -3847,9 +3857,10 @@ function rangeForPreset(p){
   const yest=fmtD(new Date(Date.now()-86400000));
   if(p==='today')return {start:today,end:today,label:'今日'};
   if(p==='yesterday')return {start:yest,end:yest,label:'昨日'};
-  if(p==='d7')return {start:fmtD(new Date(Date.now()-6*86400000)),end:today,label:'近7天'};
-  if(p==='d30')return {start:fmtD(new Date(Date.now()-29*86400000)),end:today,label:'近30天'};
-  return {start:fmtD(new Date(Date.now()-6*86400000)),end:today,label:'自定义'};
+  // V35: 与万相台后台口径对齐——"近7天/近30天"以昨日为终点（完整历史日），不含今日
+  if(p==='d7')return {start:fmtD(new Date(Date.now()-7*86400000)),end:yest,label:'近7天'};
+  if(p==='d30')return {start:fmtD(new Date(Date.now()-30*86400000)),end:yest,label:'近30天'};
+  return {start:fmtD(new Date(Date.now()-7*86400000)),end:yest,label:'自定义'};
 }
 const DASH={preset:'d7',start:'',end:'',label:'近7天'};
 function dashSetPreset(p){DASH.preset=p;renderDashboard();}
@@ -3914,9 +3925,9 @@ function collectReportRows(start,end){
             missing.push(day); // 今日由实时报表兜底，不计缺失
           }
         }
-        // 超出已缓存区间→异步补拉后自动重渲染（V33: 仅限≤7天区间，避免长周期海量调用触发限流；30天周期趋势图不逐日拉取）
+        // 超出已缓存区间→异步补拉后自动重渲染（V35: 场景过滤+节流优化后放开到≤31天，30天周期趋势图也可逐日）
         const rangeDays=Math.round((t1.getTime()-t0.getTime())/86400000)+1;
-        if(missing.length&&rangeDays<=8&&!DataAdapter._dailyFetching){
+        if(missing.length&&rangeDays<=31&&!DataAdapter._dailyFetching){
           DataAdapter._dailyFetching=true;
           DataAdapter.fetchDailyReports(start,end).then(()=>{
             DataAdapter._dailyFetching=false;
@@ -4066,7 +4077,7 @@ function renderDashboard(){
       `<span class="badge badge-gray" style="margin-left:auto">统计周期：${DASH.start} ~ ${DASH.end}${DataAdapter._dailyFetching?' · 正在补拉历史数据，稍后自动刷新...':''}</span>`;
   }
   const rows=collectReportRows(DASH.start,DASH.end);
-  // V33: 真实模式核心指标走"每场景1次区间查询"口径（与万相台后台一致）；今日走实时；导入/演示模式走本地聚合
+  // V35: 真实模式核心指标——今日走实时口径(秒出)；纯历史区间优先realDaily本地聚合(秒切)；再退区间缓存；最后才走区间API(限流慢)
   const isReal=DataAdapter.mode==='real';
   let m=null,loadingKpi=false;
   if(isReal){
@@ -4076,6 +4087,30 @@ function renderDashboard(){
       const spend=rt.reduce((s,r)=>s+(+r.cost||0),0),gmv=rt.reduce((s,r)=>s+(+r.gmv||0),0);
       const clicks=rt.reduce((s,r)=>s+(+r.clicks||0),0),imp=rt.reduce((s,r)=>s+(+r.impressions||0),0);
       m={spend:+spend.toFixed(2),gmv:+gmv.toFixed(2),clicks,impressions:imp,ctr:imp>0?+(clicks/imp*100).toFixed(2):0,roi:spend>0?+(gmv/spend).toFixed(2):0,cvr:clicks>0?+(rt.reduce((s,r)=>s+(+r.cvr||0)*(+r.clicks||0),0)/clicks*100).toFixed(2):0};
+    }else if(DASH.end<today){
+      // 纯历史区间：realDaily逐日本地聚合（全部命中则秒出，与万相台后台逐日累计口径一致）
+      const rd=DataAdapter.realDaily||{};
+      const t0=new Date(DASH.start+'T00:00:00'),t1=new Date(DASH.end+'T00:00:00');
+      if(!isNaN(t0.getTime())&&!isNaN(t1.getTime())){
+        let spend=0,gmv=0,clicks=0,imp=0,cvrW=0,have=0,need=0;
+        for(let t=t0.getTime();t<=t1.getTime();t+=86400000){
+          const day=fmtD(new Date(t));need++;
+          const d=rd[day];
+          if(d){have++;spend+=+d.cost||0;gmv+=+d.gmv||0;clicks+=+d.clicks||0;imp+=+d.imp||0;cvrW+=(+d.cvr||0)*(+d.clicks||0);}
+        }
+        if(need>0&&have===need){
+          m={spend:+spend.toFixed(2),gmv:+gmv.toFixed(2),clicks,impressions:imp,ctr:imp>0?+(clicks/imp*100).toFixed(2):0,cvr:clicks>0?+(cvrW/clicks*100).toFixed(2):0,roi:spend>0?+(gmv/spend).toFixed(2):0};
+        }else{
+          // 部分缺日：先看区间KPI缓存，否则后台拉（collectReportRows已触发逐日补拉，完成后自动重渲染）
+          const key=DASH.start+'~'+DASH.end;
+          const cached=(DataAdapter._rangeCache||{})[key];
+          if(cached&&Date.now()-cached.ts<10*60*1000){m=cached;}
+          else{
+            loadingKpi=true;
+            DataAdapter.fetchRangeSummary(DASH.start,DASH.end).then(()=>{try{renderDashboard();}catch(e){}}).catch(()=>{});
+          }
+        }
+      }
     }else{
       const key=DASH.start+'~'+DASH.end;
       const cached=(DataAdapter._rangeCache||{})[key];
